@@ -10,6 +10,8 @@ Source is mirrored publicly at [FelineStateMachine/ntig](https://github.com/Feli
 
 The rename from nostrwal does not migrate data: R2 hash domains, the example bucket/deployment names and the existing discovery extension key deliberately retain their legacy identifiers. Existing `nostrwal` tarballs remain usable. Consumers can switch imports to `ntig` with the new tarball, or temporarily install the tarball under their existing dependency key. The current integration checkout may still be named `nostrwal`; that path is not part of the package contract.
 
+From package 0.1.2, JavaScript source maps embed their source text. Debuggers and test runners do not need a sibling source checkout; the fresh-consumer packaging check verifies every shipped map includes its sources. This packaging-only update does not require consumers already pinned to 0.1.1 to upgrade their runtime.
+
 ## Authority boundary
 
 Compose these exported APIs:

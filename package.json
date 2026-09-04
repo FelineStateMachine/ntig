@@ -1,6 +1,6 @@
 {
   "name": "ntig",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "private": true,
   "type": "module",
   "description": "Bounded Git hosting on Cloudflare Workers and R2 for Nostr applications",

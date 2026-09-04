@@ -5,6 +5,7 @@
     "declaration": true,
     "declarationMap": false,
     "sourceMap": true,
+    "inlineSources": true,
     "outDir": "dist/library",
     "rootDir": "src",
     "rewriteRelativeImportExtensions": true

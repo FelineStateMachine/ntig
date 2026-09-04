@@ -1,4 +1,10 @@
-import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import {
+  mkdtempSync,
+  readdirSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from "node:fs";
 import { execFileSync } from "node:child_process";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -34,6 +40,23 @@ try {
 
   run(npm, ["init", "--yes"], consumer);
   run(npm, ["install", firstArchive], consumer);
+  const library = join(consumer, "node_modules/ntig/dist/library");
+  const maps = readdirSync(library, { recursive: true }).filter((name) =>
+    name.endsWith(".js.map"),
+  );
+  if (!maps.length) throw new Error("package contains no source maps");
+  for (const name of maps) {
+    const map = JSON.parse(readFileSync(join(library, name), "utf8"));
+    if (
+      !Array.isArray(map.sources) ||
+      !Array.isArray(map.sourcesContent) ||
+      map.sources.length !== map.sourcesContent.length ||
+      map.sourcesContent.some(
+        (source) => typeof source !== "string" || source.length === 0,
+      )
+    )
+      throw new Error(`package source map lacks embedded sources: ${name}`);
+  }
   const nodeCheck = join(consumer, "check.mjs");
   writeFileSync(
     nodeCheck,
@@ -62,7 +85,9 @@ try {
     ],
     consumer,
   );
-  console.log("package consumer and reproducibility checks passed");
+  console.log(
+    "package consumer, embedded source maps and reproducibility checks passed",
+  );
 } finally {
   for (const directory of [firstDirectory, secondDirectory, consumer])
     rmSync(directory, { force: true, recursive: true });
