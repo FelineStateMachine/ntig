@@ -1,0 +1,18 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "nostrwal",
+  "main": "src/worker.ts",
+  "compatibility_date": "2026-09-04",
+  "compatibility_flags": ["nodejs_compat"],
+  "r2_buckets": [{ "binding": "WAL", "bucket_name": "nostrwal-repository" }],
+  "secrets": { "required": ["PUSH_TOKEN"] },
+  "vars": {
+    "REPOSITORY_NPUB": "",
+    "REPOSITORY_IDENTIFIER": "repository",
+    "HEAD_REF": "",
+  },
+  "observability": {
+    "enabled": true,
+    "head_sampling_rate": 1,
+  },
+}

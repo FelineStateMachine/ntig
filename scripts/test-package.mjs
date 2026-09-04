@@ -1,0 +1,69 @@
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+
+const root = fileURLToPath(new URL("..", import.meta.url));
+const npm = process.platform === "win32" ? "npm.cmd" : "npm";
+const node = process.execPath;
+const run = (command, args, cwd = root) =>
+  execFileSync(command, args, { cwd, stdio: "pipe", encoding: "utf8" });
+
+function pack(destination) {
+  const output = run(npm, [
+    "pack",
+    "--pack-destination",
+    destination,
+    "--json",
+  ]);
+  const result = JSON.parse(output);
+  if (!Array.isArray(result) || typeof result[0]?.filename !== "string")
+    throw new Error("npm pack returned no archive");
+  return join(destination, result[0].filename);
+}
+
+const firstDirectory = mkdtempSync(join(tmpdir(), "nostrwal-pack-"));
+const secondDirectory = mkdtempSync(join(tmpdir(), "nostrwal-pack-"));
+const consumer = mkdtempSync(join(tmpdir(), "nostrwal-consumer-"));
+try {
+  const firstArchive = pack(firstDirectory);
+  const secondArchive = pack(secondDirectory);
+  if (!readFileSync(firstArchive).equals(readFileSync(secondArchive)))
+    throw new Error("npm package archive is not reproducible");
+
+  run(npm, ["init", "--yes"], consumer);
+  run(npm, ["install", firstArchive], consumer);
+  const nodeCheck = join(consumer, "check.mjs");
+  writeFileSync(
+    nodeCheck,
+    'import { MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore } from "nostrwal";\nif (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore].every(Boolean)) throw new Error("missing export");\n',
+  );
+  run(node, [nodeCheck], consumer);
+
+  const typeCheck = join(consumer, "check.mts");
+  writeFileSync(
+    typeCheck,
+    'import { MemoryStore, type GitRepository, type ObjectStore } from "nostrwal";\nconst store: ObjectStore = new MemoryStore();\ndeclare const repo: GitRepository;\nvoid store;\nvoid repo;\n',
+  );
+  run(
+    node,
+    [
+      join(root, "node_modules/typescript/bin/tsc"),
+      "--strict",
+      "--noEmit",
+      "--module",
+      "NodeNext",
+      "--moduleResolution",
+      "NodeNext",
+      "--target",
+      "ES2023",
+      typeCheck,
+    ],
+    consumer,
+  );
+  console.log("package consumer and reproducibility checks passed");
+} finally {
+  for (const directory of [firstDirectory, secondDirectory, consumer])
+    rmSync(directory, { force: true, recursive: true });
+}

@@ -1,0 +1,52 @@
+{
+  "name": "nostrwal",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Experimental container-free Git on a conditional object-store WAL",
+  "exports": {
+    ".": {
+      "types": "./dist/library/index.d.ts",
+      "import": "./dist/library/index.js",
+      "default": "./dist/library/index.js"
+    }
+  },
+  "types": "./dist/library/index.d.ts",
+  "files": [
+    "dist/library",
+    "docs",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=22.22"
+  },
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "typecheck": "tsc --noEmit",
+    "build": "node scripts/build-worker.mjs",
+    "build:library": "node scripts/build-library.mjs",
+    "prepack": "npm run build:library",
+    "pack:check": "node scripts/test-package.mjs",
+    "dev": "wrangler dev --local",
+    "cf-typegen": "wrangler types",
+    "format": "prettier --write src test scripts README.md docs package.json tsconfig.json tsconfig.build.json wrangler.jsonc",
+    "format:check": "prettier --check src test scripts README.md docs package.json tsconfig.json tsconfig.build.json wrangler.jsonc",
+    "check": "npm run typecheck && npm test && npm run build && npm run build:library"
+  },
+  "dependencies": {
+    "@scure/base": "2.4.0",
+    "fflate": "0.8.3"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "5.20260904.1",
+    "@types/node": "26.4.1",
+    "esbuild": "0.28.2",
+    "miniflare": "5.20260903.0-alpha",
+    "prettier": "3.9.6",
+    "tsx": "4.23.13",
+    "typescript": "7.0.2",
+    "wrangler": "4.129.0"
+  },
+  "main": "./dist/library/index.js",
+  "license": "MIT"
+}
