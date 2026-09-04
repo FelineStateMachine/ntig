@@ -4,7 +4,12 @@ import {
   RepositoryUnavailableError,
   classifyError,
 } from "./contracts.ts";
-import type { GitRepository, RefUpdate, Snapshot } from "./contracts.ts";
+import type {
+  GitRepository,
+  RefSnapshot,
+  RefUpdate,
+  Snapshot,
+} from "./contracts.ts";
 import { validateRefName } from "./wal.ts";
 import {
   encodePack,
@@ -166,7 +171,7 @@ function checkCapabilities(
 
 function advertisement(
   service: string,
-  snapshot: Snapshot,
+  snapshot: RefSnapshot,
   maxRefs: number,
   headRef?: string,
 ): Uint8Array {
@@ -367,6 +372,15 @@ async function loadRepository(repo: Repository): Promise<Snapshot> {
   }
 }
 
+async function loadRepositoryRefs(repo: Repository): Promise<RefSnapshot> {
+  try {
+    return await (repo.loadRefs ? repo.loadRefs() : repo.load());
+  } catch (cause) {
+    if (cause instanceof LimitError) throw cause;
+    throw new RepositoryUnavailableError("Cannot read repository", { cause });
+  }
+}
+
 export function createGitHandler(
   repo: Repository,
   options: GitHttpOptions = {},
@@ -423,7 +437,7 @@ export function createGitHandler(
           return response(
             advertisement(
               service,
-              await loadRepository(repo),
+              await loadRepositoryRefs(repo),
               maxRefs,
               options.headRef,
             ),

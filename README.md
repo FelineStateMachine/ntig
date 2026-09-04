@@ -31,9 +31,11 @@ Each repository owns an opaque, validated key prefix:
 repos/<id>/root.json          one conditional-write commit point
 repos/<id>/records/<sha256>   immutable linked transactions
 repos/<id>/packs/<sha256>     immutable Git packs
+repos/<id>/manifests/<sha256> immutable format-2 checkpoints
+repos/<id>/receipt-index/<sha256> immutable retry index nodes
 ```
 
-1. Load a consistent root and replay its immutable record chain.
+1. Load a consistent root and replay its immutable record chain, or read its format-2 manifest.
 2. Check expected old refs, the entire resulting ref namespace, pack integrity and object connectivity.
 3. Create the pack and transaction record without overwriting existing content.
 4. Compare-and-swap the root. Only success here makes the transaction visible.
@@ -46,7 +48,7 @@ The root is the only authoritative state. There is no second SQLite/DO ref datab
 
 This is experimental software, not yet a replacement for an unrestricted Git hosting service. See [the implementation gates](docs/ROADMAP.md) before deployment. The initial implementation deliberately rejects repositories beyond explicit byte/object/history limits rather than claiming unlimited R2 storage makes Git execution unlimited.
 
-The WAL defaults to 4 MiB per pack, 16 MiB cumulative unique packed data, 128 transactions, 1,024 refs, and 256 KiB transaction metadata. There is **no compaction or garbage collection yet**. Reaching a limit fails closed; do not attach a bucket lifecycle rule that deletes committed objects. Increasing a limit is not evidence the Worker can safely handle the resulting workload.
+The WAL defaults to 4 MiB per pack, 16 MiB cumulative unique packed data, 128 legacy transactions, 1,024 refs, and 256 KiB transaction metadata. An explicit [format-2 checkpoint upgrade](docs/CHECKPOINTS.md) removes the transaction-history ceiling while preserving retry receipts and all pack/object limits. Format 2 permits at most 128 unique packs. There is **no compaction or garbage collection yet**. Reaching a limit fails closed; do not attach a bucket lifecycle rule that deletes committed objects. Increasing a limit is not evidence the Worker can safely handle the resulting workload.
 
 The native decoder additionally caps individual decoded objects at 4 MiB, decoding work/retained object data at 16 MiB, object entries at 4,096, delta depth within a pack at 64, and graph edges at 65,536. These budgets are conservative: duplicate objects and delta intermediates can consume the decoding budget even when the final unique object set would be smaller. SHA-1 Git pack versions 2/3 are supported. Smart HTTP uses the original protocol, including fallback when modern clients request v2; it does not implement protocol v2, shallow clones, LFS, or SSH.
 

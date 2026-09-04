@@ -203,6 +203,42 @@ test("a corrected push with a lost acknowledgement replays without another commi
   assert.equal((await wal.load()).sequence, 3);
 });
 
+test("checkpointed hidden-PR correction retries use retained indexed records", async () => {
+  const { wal, first, second } = await fixture();
+  const name = `refs/nostr/${eventId}`;
+  await wal.commit({
+    id: "unknown-before-checkpoint",
+    updates: [{ name, old: null, new: first }],
+  });
+  const repo = createAcceptedStateRepository(wal, {
+    lookupState: async () => null,
+    lookupPrTip: async () => second,
+  });
+  const correction = {
+    id: "indexed-correction",
+    updates: [{ name, old: null, new: second }],
+  };
+  const receipt = await repo.commit(correction);
+  await wal.checkpoint();
+  await wal.commit({
+    id: "later-checkpointed",
+    updates: [{ name: branch, old: first, new: second }],
+  });
+  assert.equal(
+    (await wal.load()).records.some((r) => r.id === correction.id),
+    false,
+  );
+  assert.deepEqual(await repo.commit(correction), {
+    ...receipt,
+    replayed: true,
+  });
+  await assert.rejects(
+    repo.commit({ ...correction, pack: new Uint8Array(32) }),
+    ConflictError,
+  );
+  assert.equal((await wal.load()).sequence, 4);
+});
+
 test("PR repair does not relax visible, unknown, or explicit stale old-OID checks", async () => {
   const { wal, first, second } = await fixture();
   const name = `refs/nostr/${eventId}`;

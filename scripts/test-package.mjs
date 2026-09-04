@@ -60,14 +60,26 @@ try {
   const nodeCheck = join(consumer, "check.mjs");
   writeFileSync(
     nodeCheck,
-    'import { MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore } from "ntig";\nif (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore].every(Boolean)) throw new Error("missing export");\n',
+    `import assert from "node:assert/strict";
+import { MemoryStore, NativeGitEngine, WalRepository, createAcceptedStateRepository, MeteredObjectStore } from "ntig";
+if (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore].every(Boolean)) throw new Error("missing export");
+const wal = new WalRepository(new MemoryStore(), new NativeGitEngine());
+const request = { id: "packaged-retry", updates: [{ name: "refs/heads/absent", old: null, new: null }] };
+await wal.commit(request);
+assert.equal((await wal.checkpoint()).changed, true);
+await wal.commit({ ...request, id: "packaged-later" });
+assert.equal((await wal.load()).records.length, 1);
+assert.equal((await wal.loadRefs()).sequence, 2);
+assert.equal((await wal.lookupRecord(request.id)).sequence, 1);
+assert.deepEqual(await wal.commit(request), { id: request.id, sequence: 1, replayed: true });
+`,
   );
   run(node, [nodeCheck], consumer);
 
   const typeCheck = join(consumer, "check.mts");
   writeFileSync(
     typeCheck,
-    'import { MemoryStore, type GitRepository, type ObjectStore } from "ntig";\nconst store: ObjectStore = new MemoryStore();\ndeclare const repo: GitRepository;\nvoid store;\nvoid repo;\n',
+    'import { MemoryStore, type GitRepository, type ObjectStore, type RefSnapshot } from "ntig";\nconst store: ObjectStore = new MemoryStore();\ndeclare const repo: GitRepository;\nconst refs: RefSnapshot = await (repo.loadRefs ? repo.loadRefs() : repo.load());\nvoid store;\nvoid refs;\n',
   );
   run(
     node,

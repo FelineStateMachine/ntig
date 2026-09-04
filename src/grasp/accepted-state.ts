@@ -5,6 +5,7 @@ import {
   RepositoryUnavailableError,
   type CommitRequest,
   type GitRepository,
+  type RefSnapshot,
   type Refs,
   type RefUpdate,
 } from "../contracts.ts";
@@ -96,26 +97,13 @@ export function createAcceptedStateRepository(
       run(async () => {
         const state = captureState(await options.lookupState());
         const snapshot = await repo.load();
-        const refs: Refs = Object.create(null);
-        for (const [name, oid] of Object.entries(snapshot.refs)) {
-          const pr = prPattern.exec(name);
-          if (pr) {
-            const tip = await prTip(pr[1]!);
-            if (
-              tip === oid ||
-              (tip === null && options.allowUnknownPrRefs === true)
-            )
-              refs[name] = oid;
-          } else refs[name] = oid;
-        }
-        // HEAD names the authority-selected branch, whose materialized old tip
-        // remains useful while new state awaits Git data (including clone/checkout).
-        const head = state?.head ?? null;
-        return {
-          ...snapshot,
-          refs,
-          headRef: head,
-        };
+        return filterRefs(snapshot, state, prTip, options.allowUnknownPrRefs);
+      }),
+    loadRefs: () =>
+      run(async () => {
+        const state = captureState(await options.lookupState());
+        const snapshot = await (repo.loadRefs ? repo.loadRefs() : repo.load());
+        return filterRefs(snapshot, state, prTip, options.allowUnknownPrRefs);
       }),
     commit: (request: CommitRequest) => {
       // Copy before serialization/authority awaits: callers cannot swap authorized data.
@@ -177,9 +165,17 @@ export function createAcceptedStateRepository(
               { cause },
             );
           });
-          const prior = physical.records.find(
-            (record) => record.id === captured.id,
-          );
+          const prior =
+            physical.records.find((record) => record.id === captured.id) ??
+            (repo.lookupRecord
+              ? await repo.lookupRecord(captured.id).catch((cause: unknown) => {
+                  if (cause instanceof LimitError) throw cause;
+                  throw new RepositoryUnavailableError(
+                    "Cannot read committed PR receipt",
+                    { cause },
+                  );
+                })
+              : null);
           for (const update of corrections) {
             const original = prior?.updates.find(
               (item) => item.name === update.name,
@@ -206,4 +202,28 @@ export function createAcceptedStateRepository(
       });
     },
   };
+}
+
+async function filterRefs<T extends RefSnapshot>(
+  snapshot: T,
+  state: AcceptedState | null,
+  lookupPrTip: (eventId: string) => Promise<string | null | false>,
+  allowUnknownPrRefs: boolean | undefined,
+): Promise<T> {
+  const refs: Refs = Object.create(null);
+  for (const [name, oid] of Object.entries(snapshot.refs)) {
+    const pr = prPattern.exec(name);
+    if (pr) {
+      const tip = await lookupPrTip(pr[1]!);
+      if (tip === oid || (tip === null && allowUnknownPrRefs === true))
+        refs[name] = oid;
+    } else refs[name] = oid;
+  }
+  // HEAD names the authority-selected branch, whose materialized old tip
+  // remains useful while new state awaits Git data (including clone/checkout).
+  return {
+    ...snapshot,
+    refs,
+    headRef: state?.head ?? null,
+  } as T;
 }

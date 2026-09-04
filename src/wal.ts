@@ -10,179 +10,42 @@ import type {
   ObjectStore,
   Receipt,
   Refs,
-  RefUpdate,
+  RefSnapshot,
   Snapshot,
+  StoredObject,
   WalRecord,
 } from "./contracts.ts";
+import { CheckpointStore } from "./checkpoint-store.ts";
 
-const encoder = new TextEncoder();
-const decoder = new TextDecoder("utf-8", { fatal: true });
-const hashPattern = /^[a-f0-9]{64}$/;
-const oidPattern = /^[a-f0-9]{40}$/;
-const idPattern = /^[a-zA-Z0-9_.:-]{1,128}$/;
+import {
+  DEFAULT_WAL_LIMITS,
+  sha256,
+  validateRefName,
+  json,
+  object,
+  parse,
+  updatesFrom,
+  apply,
+  recordFrom,
+  requestHash,
+  hashPattern,
+  idPattern,
+  type WalLimits,
+} from "./wal-format.ts";
+export {
+  DEFAULT_WAL_LIMITS,
+  sha256,
+  validateRefName,
+  type WalLimits,
+} from "./wal-format.ts";
 
-export interface WalLimits {
-  maxPackBytes: number;
-  maxTotalPackBytes: number;
-  maxRecords: number;
-  maxRefs: number;
-  maxRecordBytes: number;
-}
-export const DEFAULT_WAL_LIMITS: Readonly<WalLimits> = Object.freeze({
-  maxPackBytes: 4 * 1024 * 1024,
-  maxTotalPackBytes: 16 * 1024 * 1024,
-  maxRecords: 128,
-  maxRefs: 1024,
-  maxRecordBytes: 256 * 1024,
-});
-
-export async function sha256(bytes: Uint8Array): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", bytes.slice().buffer);
-  return Array.from(new Uint8Array(digest), (value) =>
-    value.toString(16).padStart(2, "0"),
-  ).join("");
-}
-
-function json(value: unknown): Uint8Array {
-  return encoder.encode(JSON.stringify(value));
-}
-function object(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function parse(bytes: Uint8Array, max: number): unknown {
-  if (bytes.length > max) throw new LimitError("Metadata exceeds byte limit");
-  try {
-    return JSON.parse(decoder.decode(bytes));
-  } catch {
-    throw new IntegrityError("Invalid UTF-8/JSON metadata");
-  }
-}
-
-export function validateRefName(name: string): void {
-  if (
-    !name.startsWith("refs/") ||
-    encoder.encode(name).length > 1024 ||
-    /[\x00-\x20\x7f~^:?*\[\\]/.test(name) ||
-    name.includes("..") ||
-    name.includes("@{") ||
-    name.endsWith(".") ||
-    name
-      .split("/")
-      .some((part) => !part || part.startsWith(".") || part.endsWith(".lock"))
-  ) {
-    throw new IntegrityError(`Invalid ref name: ${name}`);
-  }
-}
-
-function updatesFrom(value: unknown, maxRefs: number): RefUpdate[] {
-  if (!Array.isArray(value) || value.length === 0 || value.length > maxRefs) {
-    throw new LimitError("A transaction needs 1..maxRefs updates");
-  }
-  const names = new Set<string>();
-  const updates: RefUpdate[] = [];
-  for (const item of value) {
-    if (
-      !object(item) ||
-      typeof item.name !== "string" ||
-      !(
-        item.old === null ||
-        (typeof item.old === "string" &&
-          oidPattern.test(item.old) &&
-          !/^0+$/.test(item.old))
-      ) ||
-      !(
-        item.new === null ||
-        (typeof item.new === "string" &&
-          oidPattern.test(item.new) &&
-          !/^0+$/.test(item.new))
-      )
-    ) {
-      throw new IntegrityError("Invalid ref update (SHA-1 or null required)");
-    }
-    validateRefName(item.name);
-    if (names.has(item.name)) throw new IntegrityError("Duplicate ref update");
-    names.add(item.name);
-    updates.push({ name: item.name, old: item.old, new: item.new });
-  }
-  return updates.sort((a, b) =>
-    a.name < b.name ? -1 : a.name > b.name ? 1 : 0,
-  );
-}
-
-function apply(
-  refs: Readonly<Refs>,
-  updates: readonly RefUpdate[],
-  maxRefs: number,
-): Refs {
-  const result: Refs = Object.assign(Object.create(null), refs);
-  for (const update of updates) {
-    if ((result[update.name] ?? null) !== update.old)
-      throw new ConflictError(`Stale ref: ${update.name}`);
-    if (update.new === null) delete result[update.name];
-    else result[update.name] = update.new;
-  }
-  const names = Object.keys(result).sort();
-  if (names.length > maxRefs) throw new LimitError("Too many refs");
-  for (const name of names) {
-    // Check every path prefix, not just adjacent lexical entries (foo-bar sorts between foo and foo/bar).
-    const parts = name.split("/");
-    for (let n = 2; n < parts.length; n++) {
-      if (Object.hasOwn(result, parts.slice(0, n).join("/")))
-        throw new IntegrityError("Ref namespace collision");
-    }
-  }
-  return result;
-}
-
-function recordFrom(value: unknown, maxRefs: number): WalRecord {
-  if (
-    !object(value) ||
-    value.format !== 1 ||
-    !Number.isSafeInteger(value.sequence) ||
-    typeof value.sequence !== "number" ||
-    value.sequence < 1 ||
-    !(
-      value.parent === null ||
-      (typeof value.parent === "string" && hashPattern.test(value.parent))
-    ) ||
-    typeof value.id !== "string" ||
-    !idPattern.test(value.id) ||
-    typeof value.requestHash !== "string" ||
-    !hashPattern.test(value.requestHash) ||
-    !(
-      value.pack === null ||
-      (typeof value.pack === "string" && hashPattern.test(value.pack))
-    )
-  ) {
-    throw new IntegrityError("Invalid WAL record");
-  }
-  return {
-    format: 1,
-    sequence: value.sequence,
-    parent: value.parent,
-    id: value.id,
-    requestHash: value.requestHash,
-    pack: value.pack,
-    updates: updatesFrom(value.updates, maxRefs),
-  };
-}
-
-async function requestHash(
-  id: string,
-  updates: readonly RefUpdate[],
-  pack: string | null,
-): Promise<string> {
-  return sha256(json({ id, updates, pack }));
-}
-
-/** Immutable packs + records; one CAS root is the ONLY authoritative commit point.
- * Deliberately bounded experimental implementation: no pruning/checkpointing yet.
- */
+/** Immutable data; one CAS root is the ONLY authoritative commit point. */
 export class WalRepository {
   readonly prefix: string;
   readonly limits: Readonly<WalLimits>;
   private readonly store: ObjectStore;
   private readonly engine: GitEngine;
+  private readonly checkpoints: CheckpointStore;
 
   constructor(
     store: ObjectStore,
@@ -199,10 +62,19 @@ export class WalRepository {
       if (!Number.isSafeInteger(value) || value < 1)
         throw new Error("Limits must be positive safe integers");
     }
+    this.checkpoints = new CheckpointStore(
+      store,
+      engine,
+      this.prefix,
+      this.limits,
+    );
   }
 
   async load(): Promise<Snapshot> {
-    const root = await this.store.get(`${this.prefix}root.json`);
+    return this.loadRoot(await this.store.get(`${this.prefix}root.json`));
+  }
+
+  private async loadRoot(root: StoredObject | null): Promise<Snapshot> {
     if (!root)
       return {
         sequence: 0,
@@ -213,6 +85,7 @@ export class WalRepository {
         packs: [],
       };
     const value = parse(root.bytes, 1024);
+    if (object(value) && value.format === 2) return this.checkpoints.load(root);
     if (
       !object(value) ||
       value.format !== 1 ||
@@ -290,6 +163,18 @@ export class WalRepository {
     };
   }
 
+  /** Metadata-only for v2; legacy repositories retain full replay/verification. */
+  async loadRefs(): Promise<RefSnapshot> {
+    const root = await this.store.get(`${this.prefix}root.json`);
+    if (root) {
+      const value = parse(root.bytes, 1024);
+      if (object(value) && value.format === 2)
+        return this.checkpoints.loadRefs(root);
+    }
+    const { sequence, tip, version, refs } = await this.loadRoot(root);
+    return { sequence, tip, version, refs };
+  }
+
   async commit(request: CommitRequest): Promise<Receipt> {
     // Copy mutable input before the first await, so digest, validation and storage agree.
     const id = request.id;
@@ -307,11 +192,17 @@ export class WalRepository {
         { cause },
       );
     });
+    if (snapshot.checkpoint)
+      return this.checkpoints.commit(snapshot, {
+        id,
+        updates,
+        ...(pack === undefined ? {} : { pack }),
+      });
     const prior = this.replay(snapshot, id, digest);
     if (prior) return prior;
     if (snapshot.sequence >= this.limits.maxRecords)
       throw new LimitError(
-        "WAL history limit reached; checkpointing is not implemented",
+        "Legacy WAL history limit reached; explicit checkpoint migration required",
       );
     const refs = apply(snapshot.refs, updates, this.limits.maxRefs);
     const duplicatePack =
@@ -346,13 +237,36 @@ export class WalRepository {
       snapshot.version,
     );
     if (!committed) {
-      const winner = this.replay(await this.load(), id, digest);
+      const current = await this.load();
+      const prior = current.checkpoint ? await this.lookupRecord(id) : null;
+      const winner = this.replay(
+        prior ? { ...current, records: [prior] } : current,
+        id,
+        digest,
+      );
       if (winner) return winner;
       throw new ConflictError(
         "Concurrent transaction committed; reload refs before retrying",
       );
     }
     return { id, sequence: record.sequence, replayed: false };
+  }
+
+  /** Explicit one-way format upgrade. Old readers must be retired before migration. */
+  async checkpoint(): Promise<{ sequence: number; changed: boolean }> {
+    return this.checkpoints.migrate(await this.load());
+  }
+
+  async lookupRecord(id: string): Promise<WalRecord | null> {
+    if (typeof id !== "string" || !idPattern.test(id))
+      throw new IntegrityError("Invalid request ID");
+    const root = await this.store.get(`${this.prefix}root.json`);
+    if (!root) return null;
+    const value = parse(root.bytes, 1024);
+    if (object(value) && value.format === 2)
+      return this.checkpoints.lookupRecord(root, id);
+    const snapshot = await this.loadRoot(root);
+    return snapshot.records.find((record) => record.id === id) ?? null;
   }
 
   private replay(

@@ -42,20 +42,33 @@ export interface WalRecord {
   pack: string | null;
   updates: RefUpdate[];
 }
-export interface Snapshot {
+/** Metadata needed to advertise refs without loading packs or WAL records. */
+export interface RefSnapshot {
   /** Undefined: legacy heuristic. Null: authority explicitly has no HEAD. */
   headRef?: string | null;
   sequence: number;
   tip: string | null;
   version: string | null;
   refs: Refs;
+}
+export interface Snapshot extends RefSnapshot {
+  /** Present only after explicit v2 checkpoint migration. Records are then a bounded recent view. */
+  checkpoint?: {
+    manifestHash: string;
+    receiptRoot: string | null;
+    packIds: string[];
+  };
   records: WalRecord[];
   packs: Uint8Array[];
 }
 /** Public integration seam; authority wrappers need no concrete WAL internals. */
 export interface GitRepository {
   load(): Promise<Snapshot>;
+  /** Optional metadata-only view for advertisements and other ref readers. */
+  loadRefs?(): Promise<RefSnapshot>;
   commit(request: CommitRequest): Promise<Receipt>;
+  /** Indexed committed-record lookup; does not imply the full history is in Snapshot.records. */
+  lookupRecord?(id: string): Promise<WalRecord | null>;
 }
 export class ConflictError extends Error {
   override name = "ConflictError";

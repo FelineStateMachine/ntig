@@ -37,9 +37,14 @@ Marmot relay behavior and nsite publication remain separate work. A repository s
 
 ## Gate 4 — sustained operation
 
-Not implemented or established by the first iteration:
+Implemented in the checkpoint iteration (opt-in; see [upgrade and guarantees](CHECKPOINTS.md)):
 
-- Checkpoints/compaction, retention of retry receipts, safe reader leases, and orphan GC.
+- Single-root format-2 manifests and retained, indexed retry receipts; no legacy history replay after migration.
+- Metadata-only advertisements through `loadRefs()`, with unchanged accepted-state visibility rules.
+
+Still not implemented or established:
+
+- Reachable-object compaction, complete historical integrity scrubs, safe reader leases, and orphan GC.
 - Indexed object lookup and selective pack reads instead of replaying the whole bounded repository.
 - Streaming large packs, multipart writes, large-repository and long-history performance.
 - Production Workers CPU/peak-memory measurements under concurrency; Miniflare wall time is not a production CPU benchmark.
@@ -47,7 +52,7 @@ Not implemented or established by the first iteration:
 - Comprehensive adversarial corpus/fuzzing, third-party security review, and SHA-1 collision-detection parity with hardened native Git.
 - SHA-256 Git repositories, Git LFS, SSH, shallow history and arbitrary Git extensions unless explicitly implemented and tested.
 
-The initial root has constant size, but replay is linear in transaction history and stored pack volume. At the history cap, writes stop. This is an explicit checkpoint-design milestone, not a problem to work around by raising the cap indefinitely.
+Format 1 still stops new writes at the legacy history cap. Explicit migration to format 2 removes that cap without raising the replay budget. Pack loading and validation remain linear in stored pack volume, and retained receipt metadata continues to grow. Next comes selective object/pack reads and repacking; deletion requires coordinated readers/writers and complete bounded reachability verification. Production measurements remain a separate gate. bindws pricing can be discussed after these technical boundaries are solidified.
 
 ## Design policy
 
