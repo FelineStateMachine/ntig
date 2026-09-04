@@ -1,6 +1,10 @@
-# nostrwal
+# ntig
 
-An independent experiment in **container-free Git backed by a Cloudflare R2 write-ahead log**. No bindws imports, deployment, or runtime dependency. Narwal/gitwal is an architectural reference, not an upstream dependency; this implementation is original TypeScript.
+Bounded Git hosting for Nostr applications, running directly on Cloudflare Workers with an R2-backed write-ahead log. Think of it as the Git-storage side of ngit in the cloud: Smart HTTP, pack validation, atomic ref updates and GRASP-facing policy hooks, without a Git container.
+
+[bindws](https://github.com/FelineStateMachine/bindws) is the primary consumer. It supplies the Nostr relay, accepted-event authority and application policy; ntig supplies the independent Git/storage backend. There are no bindws imports or runtime dependencies here. Narwal/gitwal is an architectural reference, not an upstream dependency; this implementation is original TypeScript.
+
+This public repository is currently a source mirror for our integration work, not a separately operated hosting service. There is no CI; tests and package checks run locally before integration snapshots are pinned. Incoming consumer fixes take priority over repository polish. The project was initially named **nostrwal**; old snapshots and stable storage identifiers retain that name.
 
 The question this project answers is: can a bounded, useful Git service run directly in Workers, and which requirements still need a native Git process or a different storage design?
 

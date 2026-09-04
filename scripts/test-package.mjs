@@ -23,9 +23,9 @@ function pack(destination) {
   return join(destination, result[0].filename);
 }
 
-const firstDirectory = mkdtempSync(join(tmpdir(), "nostrwal-pack-"));
-const secondDirectory = mkdtempSync(join(tmpdir(), "nostrwal-pack-"));
-const consumer = mkdtempSync(join(tmpdir(), "nostrwal-consumer-"));
+const firstDirectory = mkdtempSync(join(tmpdir(), "ntig-pack-"));
+const secondDirectory = mkdtempSync(join(tmpdir(), "ntig-pack-"));
+const consumer = mkdtempSync(join(tmpdir(), "ntig-consumer-"));
 try {
   const firstArchive = pack(firstDirectory);
   const secondArchive = pack(secondDirectory);
@@ -37,14 +37,14 @@ try {
   const nodeCheck = join(consumer, "check.mjs");
   writeFileSync(
     nodeCheck,
-    'import { MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore } from "nostrwal";\nif (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore].every(Boolean)) throw new Error("missing export");\n',
+    'import { MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore } from "ntig";\nif (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore].every(Boolean)) throw new Error("missing export");\n',
   );
   run(node, [nodeCheck], consumer);
 
   const typeCheck = join(consumer, "check.mts");
   writeFileSync(
     typeCheck,
-    'import { MemoryStore, type GitRepository, type ObjectStore } from "nostrwal";\nconst store: ObjectStore = new MemoryStore();\ndeclare const repo: GitRepository;\nvoid store;\nvoid repo;\n',
+    'import { MemoryStore, type GitRepository, type ObjectStore } from "ntig";\nconst store: ObjectStore = new MemoryStore();\ndeclare const repo: GitRepository;\nvoid store;\nvoid repo;\n',
   );
   run(
     node,

@@ -1,12 +1,14 @@
-# Embedding nostrwal
+# Embedding ntig
 
-The npm package is an ESM library with declarations, separate from the example Worker. It exports storage, WAL, Git, HTTP, GRASP policy and metering seams from `nostrwal`. No bindws imports or bearer-token dependency are included in the library entry point.
+The npm package is an ESM library with declarations, separate from the example Worker. It exports storage, WAL, Git, HTTP, GRASP policy and metering seams from `ntig`. No bindws imports or bearer-token dependency are included in the library entry point. [bindws](https://github.com/FelineStateMachine/bindws) is the primary consumer.
 
 ## Reproducible dependency
 
-From a clean, committed nostrwal checkout, run `npm ci`, `npm run check`, `npm run pack:check`, then `npm pack --pack-destination <artifact-directory>`. The prepack hook rebuilds the library; the package smoke test compares two archives byte-for-byte and installs one into a fresh Node/TypeScript consumer. Keep the source commit, archive checksum and vendored archive together in the consuming project's provenance record. Install that archive and commit the consumer lockfile. Do not use a mutable sibling `file:../nostrwal` dependency.
+From a clean, committed ntig checkout, run `npm ci`, `npm run check`, `npm run pack:check`, then `npm pack --pack-destination <artifact-directory>`. The prepack hook rebuilds the library; the package smoke test compares two archives byte-for-byte and installs one into a fresh Node/TypeScript consumer. Keep the source commit, archive checksum and vendored archive together in the consuming project's provenance record. Install that archive and commit the consumer lockfile. Do not use a mutable sibling `file:../ntig` dependency.
 
-No npm publication or remote repository is configured. This is a private vendoring workflow, not a published registry release.
+Source is mirrored publicly at [FelineStateMachine/ntig](https://github.com/FelineStateMachine/ntig). No CI or npm registry publication is configured; the package remains `private: true` to prevent accidental publishing. This is a locally tested, pinned vendoring workflow.
+
+The rename from nostrwal does not migrate data: R2 hash domains, the example bucket/deployment names and the existing discovery extension key deliberately retain their legacy identifiers. Existing `nostrwal` tarballs remain usable. Consumers can switch imports to `ntig` with the new tarball, or temporarily install the tarball under their existing dependency key. The current integration checkout may still be named `nostrwal`; that path is not part of the package contract.
 
 ## Authority boundary
 
@@ -21,7 +23,7 @@ import {
   createGitHandler,
   type AcceptedStateOptions,
   type ObjectStore,
-} from "nostrwal";
+} from "ntig";
 
 function repositoryHandler(
   store: ObjectStore,

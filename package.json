@@ -1,9 +1,13 @@
 {
-  "name": "nostrwal",
+  "name": "ntig",
   "version": "0.1.1",
   "private": true,
   "type": "module",
-  "description": "Experimental container-free Git on a conditional object-store WAL",
+  "description": "Bounded Git hosting on Cloudflare Workers and R2 for Nostr applications",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/FelineStateMachine/ntig.git"
+  },
   "exports": {
     ".": {
       "types": "./dist/library/index.d.ts",

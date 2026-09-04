@@ -1,5 +1,5 @@
 /**
- * Public, runtime-neutral nostrwal library surface.
+ * Public, runtime-neutral ntig library surface.
  *
  * The Worker entrypoint is intentionally not re-exported: consumers should
  * compose the storage, Git, HTTP, and GRASP pieces in their own runtime.

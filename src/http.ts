@@ -180,7 +180,7 @@ function advertisement(
       throw new IntegrityError("Invalid advertised ref");
   }
   const upload = service === "git-upload-pack";
-  const caps = [...(upload ? UPLOAD_CAPS : RECEIVE_CAPS), "agent=nostrwal/0.1"];
+  const caps = [...(upload ? UPLOAD_CAPS : RECEIVE_CAPS), "agent=ntig/0.1"];
   const head =
     snapshot.headRef !== undefined
       ? snapshot.headRef

@@ -1,10 +1,10 @@
 /** NIP-11-shaped discovery. No complete GRASP/Nostr relay standard is claimed. */
 export function serviceInformation(repositoryPath: string) {
   return {
-    name: "nostrwal",
+    name: "ntig",
     description:
       "Experimental container-free Git/WAL service. Nostr relay and signed-state authorization are not yet implemented.",
-    version: "0.1.0",
+    version: "0.1.1",
     supported_nips: [] as number[],
     supported_grasps: [] as string[],
     repo_acceptance_criteria:
@@ -57,7 +57,7 @@ export function repositoryPage(path: string): Response {
       ]!,
   );
   return new Response(
-    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>nostrwal</title><h1>nostrwal</h1><p>Experimental container-free Git repository.</p><p>Clone path: <code>${escaped}</code></p><p><a href="https://gitworkshop.dev/" rel="noreferrer">Browse Nostr Git with Git Workshop</a></p><p>This service does not yet implement a Nostr relay or signed-state push authorization.</p></html>`,
+    `<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>ntig</title><h1>ntig</h1><p>Experimental container-free Git repository.</p><p>Clone path: <code>${escaped}</code></p><p><a href="https://gitworkshop.dev/" rel="noreferrer">Browse Nostr Git with Git Workshop</a></p><p>This service does not yet implement a Nostr relay or signed-state push authorization.</p></html>`,
     {
       headers: {
         "content-type": "text/html; charset=utf-8",

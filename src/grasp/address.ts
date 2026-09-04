@@ -178,6 +178,7 @@ export async function repositoryStoragePrefix(
     checked.pubkey.match(/../g)!.map((x) => parseInt(x, 16)),
   );
   const id = UTF8.encode(checked.identifier);
+  // Persisted v1 identity domains: never rename these with the project brand.
   const domain = UTF8.encode(
     alternativePRs
       ? "nostrwal/grasp/pr-repository\0"
