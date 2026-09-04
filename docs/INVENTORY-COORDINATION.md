@@ -1,9 +1,16 @@
 # Read-only inventory and coordination evidence
 
-Scope: tests and documentation only. No runtime exports, storage format,
+Historical scope of commit `67a32a2`: tests and documentation only. No runtime exports, storage format,
 package version, immutable archive, production configuration, migration,
 collection, or billing changes. The inventory is a source-only diagnostic
 harness, not an administrator endpoint or a collector.
+
+**Follow-up:** package 0.3.0 promotes and extends the harness into
+`src/inventory.ts`, exported from `ntig`. The former test helper has moved;
+the historical API and limits below are not the current runtime contract.
+See [bounded runtime inventory](INVENTORY.md) for v1/v2 support, current types,
+separate cursor bounds, ref-history validation, cancellation and ownership.
+The counterexamples and remaining collection gates in this document still apply.
 
 Validation for this analysis checkout: `npm run typecheck` and `npm test`
 pass, with 172 tests and no failures or skips. The paired bindws follow-up
@@ -153,8 +160,9 @@ Even passing live-instance interleaving tests leaves these collection gates:
 - Retain indefinite retry receipts and their current index unless a separate
   explicit protocol/policy change is approved.
 
-No runtime fix is included if the audit finds a gap. Such a gap is a blocker
-to metadata collection, not permission to broaden this test/docs-only pass.
+No runtime fix was included in that historical audit. The subsequently
+authorized runtime integration addresses live-instance admission separately;
+the lifecycle/recovery requirements remain blockers to collection.
 
 ## Host results from the paired audit
 

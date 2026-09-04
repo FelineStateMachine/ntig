@@ -10,10 +10,18 @@ import { MemoryStore } from "../src/memory-store.ts";
 import { NativeGitEngine } from "../src/git/engine.ts";
 import { WalRepository } from "../src/wal.ts";
 import {
-  boundedInventory,
+  boundedInventory as inspect,
+  type InventoryLimits,
   type InventoryListing,
   type ListedObject,
-} from "./helpers/bounded-inventory.ts";
+} from "../src/inventory.ts";
+
+// Preserve the original proof-fixture calls while exercising the public options API.
+const boundedInventory = (
+  source: Pick<ObjectStore, "get">,
+  pages: InventoryListing,
+  limits: Partial<InventoryLimits> = {},
+) => inspect(source, pages, { limits });
 
 class InventoryStore implements ObjectStore {
   readonly inner = new MemoryStore();
@@ -137,6 +145,21 @@ test("every inventory budget is enforced and no excess provider call starts", as
     LimitError,
   );
   assert.equal(gets, 2);
+  let cursorPages = 0;
+  await assert.rejects(
+    boundedInventory(
+      store,
+      {
+        list: async () => {
+          cursorPages++;
+          return { keys: [], cursor: "next" };
+        },
+      },
+      { maxCursorBytes: 0 },
+    ),
+    LimitError,
+  );
+  assert.equal(cursorPages, 1);
 });
 
 test("successful pagination separates exact known keys from nested and unknown names", async () => {
@@ -192,7 +215,7 @@ test("pagination cycles, oversized cursors and unsafe byte totals abort", async 
   assert.equal(pages, 3);
   await assert.rejects(
     boundedInventory(store, {
-      list: async () => ({ keys: [], cursor: "x".repeat(1025) }),
+      list: async () => ({ keys: [], cursor: "x".repeat(8193) }),
     }),
     /cursor/,
   );
@@ -310,8 +333,8 @@ test("bounded inventory marks the current trie and indexed records", async () =>
   const { store } = await fixture();
   const report = await boundedInventory(store, listing(store));
   assert.equal(report.sequence, 1);
-  assert.equal(report.live.byKind.records, 1);
-  assert.ok((report.live.byKind["receipt-index"] ?? 0) >= 1);
+  assert.equal(report.live.byKind.records.keys, 1);
+  assert.ok(report.live.byKind["receipt-index"].keys >= 1);
   assert.equal(report.unreferenced.keys, 0);
   assert.equal(store.writes, 5); // legacy record/root, checkpoint index/manifest/root
 });

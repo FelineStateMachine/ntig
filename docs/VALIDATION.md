@@ -2,7 +2,7 @@
 
 Run `npm ci && npm run check` from the repository root. Run `npm audit` separately when evaluating current dependency advisories. All fixtures and R2 data are local; no Cloudflare deployment or account is used.
 
-Verified 2026-09-04 for 0.2.1: **152 tests passed**, typecheck and self-contained Worker build passed, and `npm audit` reported zero vulnerabilities. The library package additionally passes fresh Node/TypeScript consumer checks (including scoped retry and use-after-close rejection) and same-toolchain byte-for-byte reproducibility checks. Release validation used Node 22.22.3 / npm 10.9.8. These counts describe this iteration, not an assurance about future dependency advisories or untested workloads.
+Verified 2026-09-04 for 0.3.0: **184 tests passed**, typecheck and self-contained Worker/library builds passed, and `npm audit` reported zero vulnerabilities. The library package additionally passes fresh Node/TypeScript consumer checks (including scoped retry, use-after-close rejection, v1/v2 inventory exports and cancellation) and same-toolchain byte-for-byte reproducibility checks. Release validation used Node 22.22.3 / npm 10.9.8. These counts describe this iteration, not an assurance about future dependency advisories or untested workloads. The prior immutable 0.2.1 release passed 152 tests.
 
 ## What is exercised
 
@@ -18,6 +18,8 @@ Verified 2026-09-04 for 0.2.1: **152 tests passed**, typecheck and self-containe
 - Canonical bulk receipt construction matching incremental index roots, pre-write rejection of invalid/duplicate/over-budget inputs, fixed-ref versus growing-tag physical metadata inventories, and serialized host-style metadata byte/key reservations across quota failures, orphan publication and uncertain writes. Indexed identical retries remain write-free at full capacity. These fixtures do not add a runtime quota ledger or garbage collector.
 - Cold restore, losing CAS writers, atomic ref changes, reused retry IDs, tenant isolation, corrupted storage, and a deterministic 200-transaction model test.
 - Real local R2 conditional writes and concurrent CAS, byte/key limits and buffer ownership.
+- Read-only inventory across both storage formats and custom repository limits, exact metadata key/byte partitions, malformed pagination/cursor cycles, every operation/data budget, root-body/version races and provider failures. Adversarial rehashed v2 fixtures cover receipt parent chains, expected-old history, final manifest refs and historical pack membership. Cooperative cancellation starts no post-abort I/O and awaits pending calls before returning.
+- Actual workerd/R2 inventory before migration, after migration and after restart, with zero PUT attempts, identical root bytes/ETag, retained historical receipts and unchanged two-GET advertisements. Deterministic old-reader and pending-publisher counterexamples show why a stable inventory is not collection authorization.
 - HTTP framing, fail-closed pre-body auth, exact routing, capability advertisements, rejected stale transactions, exact reachable fetch object sets, inaccessible dangling objects and filtered pack contents.
 - Accepted-state and PR authority, pending-state old-OID and signed HEAD preservation through actual WAL commits, anonymous PR deletion denial, request capture, and mixed unauthorized transactions with no publication.
 - Stock Git corrections of hidden pre-event PR tips, including observed zero-old commands; physical CAS race rejection, lost-acknowledgement recovery and receipt replay after later commits.

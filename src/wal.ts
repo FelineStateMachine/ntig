@@ -17,6 +17,12 @@ import type {
 } from "./contracts.ts";
 import { CheckpointStore } from "./checkpoint-store.ts";
 import { ObjectReadSession, type ReadSessionOptions } from "./read-session.ts";
+import {
+  boundedInventory,
+  type InventoryListing,
+  type InventoryOptions,
+  type InventoryReport,
+} from "./inventory.ts";
 
 import {
   DEFAULT_WAL_LIMITS,
@@ -73,6 +79,18 @@ export class WalRepository {
 
   async load(): Promise<Snapshot> {
     return this.loadRoot(await this.store.get(`${this.prefix}root.json`));
+  }
+
+  /** Bounded read-only inventory. Host admission/coordination is still required. */
+  inventory(
+    listing: InventoryListing,
+    options: Pick<InventoryOptions, "limits" | "signal"> = {},
+  ): Promise<InventoryReport> {
+    return boundedInventory(this.store, listing, {
+      ...options,
+      prefix: this.prefix,
+      walLimits: this.limits,
+    });
   }
 
   /** Reuse immutable reads within one awaited operation; roots and authority stay fresh. */

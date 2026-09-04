@@ -8,6 +8,7 @@ import { promisify } from "node:util";
 import { createServer } from "node:http";
 import { build } from "esbuild";
 import { Miniflare } from "miniflare";
+import type { InventoryReport } from "../src/inventory.ts";
 const runExecFile = promisify(execFileCallback);
 const execFile = (
   file: string,
@@ -109,6 +110,53 @@ test("checkpoint migration bounds WAL history and survives workerd restart", asy
     assert.equal(response.status, 200, text);
     return JSON.parse(text) as Record<string, unknown>;
   };
+  const inventory = async (format: 1 | 2, sequence: number) => {
+    const bucket = await mf.getR2Bucket("WAL");
+    const rootKey = "checkpoint-test/repos/test/root.json";
+    const before = await bucket.get(rootKey);
+    assert.ok(before);
+    const rootBytes = await before.arrayBuffer();
+    const report = (await call({
+      op: "inventory",
+    })) as unknown as InventoryReport & {
+      testGets: number;
+      testPuts: number;
+    };
+    assert.equal(report.format, format);
+    assert.equal(report.sequence, sequence);
+    assert.equal(report.validation, "metadata-and-pack-hashes");
+    assert.equal(report.authority, false);
+    assert.equal(report.gcCandidate, false);
+    assert.equal(report.testPuts, 0);
+    assert.equal(report.testGets, report.observed.gets);
+    assert.equal(report.live.byKind.records.keys, sequence);
+    assert.equal(report.live.byKind.packs.keys, 1);
+    assert.equal(report.live.byKind.manifests.keys, format === 2 ? 1 : 0);
+    for (const field of ["keys", "bytes"] as const) {
+      assert.equal(
+        report.listed[field],
+        report.live[field] + report.unreferenced[field] + report.unknown[field],
+      );
+      for (const total of [
+        report.listed,
+        report.live,
+        report.unreferenced,
+        report.unknown,
+      ])
+        assert.equal(
+          total[field],
+          Object.values(total.byKind).reduce(
+            (sum, kind) => sum + kind[field],
+            0,
+          ),
+        );
+    }
+    const after = await bucket.get(rootKey);
+    assert.ok(after);
+    assert.equal(after.etag, before.etag);
+    assert.deepEqual(await after.arrayBuffer(), rootBytes);
+    return report;
+  };
   const source = join(dir, "source");
   await execFile("git", ["init", "-b", "main", source]);
   await execFile("git", [
@@ -155,6 +203,7 @@ test("checkpoint migration bounds WAL history and survives workerd restart", asy
   for (let i = 1; i < 128; i++)
     await call({ op: "commit", id: `ref-${i}`, name: `refs/heads/test-${i}` });
   assert.equal((await call({ op: "load" })).sequence, 128);
+  await inventory(1, 128);
   const migrated = await call({ op: "checkpoint" });
   assert.equal(migrated.changed, true);
   assert.equal(migrated.sequence, 128);
@@ -165,6 +214,7 @@ test("checkpoint migration bounds WAL history and survives workerd restart", asy
     (after.records as number) <= 1,
     `checkpoint retained too many records: ${after.records}`,
   );
+  await inventory(2, 128);
   for (let i = 128; i < 138; i++)
     await call({
       op: "commit",
@@ -178,6 +228,7 @@ test("checkpoint migration bounds WAL history and survives workerd restart", asy
   const restartedState = await call({ op: "load" });
   assert.equal(restartedState.checkpoint, true);
   assert.equal(restartedState.sequence, 138);
+  await inventory(2, 138);
   const replay = await call({
     op: "commit",
     id: "initial-pack",

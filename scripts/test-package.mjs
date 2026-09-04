@@ -61,15 +61,42 @@ try {
   writeFileSync(
     nodeCheck,
     `import assert from "node:assert/strict";
-import { MemoryStore, NativeGitEngine, WalRepository, createAcceptedStateRepository, MeteredObjectStore, ObjectReadSession, RepositoryUnavailableError } from "ntig";
+import { MemoryStore, NativeGitEngine, WalRepository, createAcceptedStateRepository, MeteredObjectStore, ObjectReadSession, RepositoryUnavailableError, boundedInventory, R2InventoryListing } from "ntig";
 if (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore].every(Boolean)) throw new Error("missing export");
-const wal = new WalRepository(new MemoryStore(), new NativeGitEngine());
+const memory = new MemoryStore();
+const keys = new Set();
+let puts = 0;
+const store = {
+  get: key => memory.get(key),
+  put: async (key, bytes, expected) => {
+    puts++;
+    const result = await memory.put(key, bytes, expected);
+    if (result) keys.add(key);
+    return result;
+  },
+};
+const listing = new R2InventoryListing({ list: async ({ prefix }) => ({
+  objects: await Promise.all([...keys].filter(key => key.startsWith(prefix)).map(async key => ({key, size: (await memory.get(key)).bytes.length}))),
+  truncated: false,
+}) });
+const wal = new WalRepository(store, new NativeGitEngine());
 const request = { id: "packaged-retry", updates: [{ name: "refs/heads/absent", old: null, new: null }] };
 await wal.commit(request);
+assert.equal((await wal.inventory(listing)).format, 1);
 assert.equal((await wal.checkpoint()).changed, true);
 await wal.commit({ ...request, id: "packaged-later" });
 assert.equal((await wal.load()).records.length, 1);
 assert.equal((await wal.loadRefs()).sequence, 2);
+const beforeInventory = puts;
+const report = await boundedInventory({ get: store.get }, listing);
+assert.equal(report.format, 2);
+assert.equal(report.live.byKind.records.keys, 2);
+assert.equal(report.authority, false);
+assert.equal(report.gcCandidate, false);
+assert.equal(puts, beforeInventory);
+const abort = new AbortController();
+abort.abort();
+await assert.rejects(wal.inventory(listing, { signal: abort.signal }), { name: "AbortError" });
 assert.equal((await wal.lookupRecord(request.id)).sequence, 1);
 assert.deepEqual(await wal.commit(request), { id: request.id, sequence: 1, replayed: true });
 assert.equal(typeof ObjectReadSession, "function");
@@ -88,7 +115,7 @@ assert.equal((await wal.loadRefs()).sequence, 2);
   const typeCheck = join(consumer, "check.mts");
   writeFileSync(
     typeCheck,
-    'import { MemoryStore, type GitRepository, type ObjectStore, type RefSnapshot } from "ntig";\nconst store: ObjectStore = new MemoryStore();\ndeclare const repo: GitRepository;\nconst refs: RefSnapshot = await (repo.loadRefs ? repo.loadRefs() : repo.load());\nvoid store;\nvoid refs;\n',
+    'import { MemoryStore, boundedInventory, R2InventoryListing, type InventoryReport, type InventoryLimits, type GitRepository, type ObjectStore, type RefSnapshot } from "ntig";\nconst store: ObjectStore = new MemoryStore();\ndeclare const repo: GitRepository;\nconst refs: RefSnapshot = await (repo.loadRefs ? repo.loadRefs() : repo.load());\nconst listing = new R2InventoryListing({list: async () => ({objects: [], truncated: false})});\nconst limits: Partial<InventoryLimits> = {maxGets: 10, maxCursorBytes: 8192};\nconst report: InventoryReport = await boundedInventory({get: key => store.get(key)}, listing, {limits, signal: new AbortController().signal});\nvoid refs;\nvoid report;\n',
   );
   run(
     node,

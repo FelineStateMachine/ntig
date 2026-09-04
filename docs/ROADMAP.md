@@ -43,6 +43,7 @@ Implemented in the checkpoint iteration (opt-in; see [upgrade and guarantees](CH
 - Metadata-only advertisements through `loadRefs()`, with unchanged accepted-state visibility rules.
 - Optional request-scoped immutable read reuse, preserving fresh roots, authorization and publication recovery (0.2.1).
 - Bulk migration index construction without intermediate trees; matched fixed-ref/growing-ref metadata inventories and host-style byte/key reservation fault tests (0.2.1). See [measurements and budget boundaries](READ-EFFICIENCY.md).
+- Bounded runtime inventory for both formats, with complete retained receipt/ref-history checks, pack hashes, per-category key/byte totals, R2 listing and cooperative cancellation (0.3.0). See [inventory and host ownership](INVENTORY.md). It neither changes the root nor authorizes collection.
 
 Still not implemented or established:
 
@@ -54,7 +55,7 @@ Still not implemented or established:
 - Comprehensive adversarial corpus/fuzzing, third-party security review, and SHA-1 collision-detection parity with hardened native Git.
 - SHA-256 Git repositories, Git LFS, SSH, shallow history and arbitrary Git extensions unless explicitly implemented and tested.
 
-Format 1 still stops new writes at the legacy history cap. Explicit migration to format 2 removes that cap without raising the replay budget. Pack loading and validation remain linear in stored pack volume, and retained receipt metadata continues to grow. Next comes selective object/pack reads and repacking; deletion requires coordinated readers/writers and complete bounded reachability verification. Production measurements remain a separate gate. bindws pricing can be discussed after these technical boundaries are solidified.
+Format 1 still stops new writes at the legacy history cap. Explicit migration to format 2 removes that cap without raising the replay budget. Pack loading and validation remain linear in stored pack volume, and retained receipt metadata continues to grow. The current integration milestone is owner-admitted diagnostic inventory and shared reader/writer admission in bindws. Next come crash/lifecycle/accounting proof for collection and selective object/pack reads or repacking; no deletion is enabled. Production measurements remain a separate gate. bindws pricing can be discussed after these technical boundaries are solidified, while bounded admission and actual usage observations must exist before enabling expensive work.
 
 ## Design policy
 

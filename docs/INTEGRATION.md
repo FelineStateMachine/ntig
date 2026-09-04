@@ -81,6 +81,18 @@ Exported errors carry stable codes: `CONFLICT`, `INVALID_DATA`, `LIMIT_EXCEEDED`
 
 ## Bounded cost and support
 
+From 0.3.0, `wal.inventory(listing, { limits?, signal? })` and the readonly
+`boundedInventory({ get }, listing, options)` expose diagnostic metadata/pack-hash
+validation and per-category key/byte totals for both storage formats.
+`R2InventoryListing` supplies bounded namespace-isolated pagination. Keep the
+operation inside shared host ownership, authenticate and resolve repository
+identity server-side, and apply fixed admission/rate/read budgets. Meter actual
+GET/list calls on failures as well as successes; report totals are not a
+durable billing ledger and may not justify adjusting reservations. Cancellation
+waits for outstanding I/O before returning. See [the complete inventory contract](INVENTORY.md)
+for options, memory limits and the unchanged collection gate. No automatic
+maintenance, storage-format migration, pricing change or deletion is added.
+
 For format 1, `n` WAL records referencing `p` distinct packs require `1 + n + p` object GETs per cold load. An uncontended new legacy push adds up to three PUTs (pack, record, root); a ref-only push uses two. Existing immutable objects, CAS losses and retries add reads/attempts. Format 2 instead reads a bounded manifest and indexed receipt paths; advertisements use exactly two GETs. Its commits also publish a manifest and copy-on-write index nodes. See [checkpoint format and read guarantees](CHECKPOINTS.md) for operation counts and migration requirements. Full loads in both formats validate the stored Git object graph. Fetch currently decodes the in-memory pack snapshot again; this is duplicate CPU/hash work, **not another R2 download**. Fetch traversal caches links and caps total distinct graph edges at 65,536. Haves are not used to minimize the outgoing pack.
 
 Known-tip PR create/correction requests (`old=0`) perform one additional full load to reconcile the advertised view with physical refs and retained retry records. It is shared across all eligible updates in that transaction, not one load per ref. No extra writes or pre-commit deletion are used for correction.
