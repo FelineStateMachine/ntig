@@ -7,10 +7,12 @@ import type {
   StoredObject,
 } from "../src/contracts.ts";
 import { encodePack } from "../src/git/encode.ts";
-import { NativeGitEngine } from "../src/git/engine.ts";
+import { NativeGitEngine, objectLinks } from "../src/git/engine.ts";
+import { readObjects } from "../src/git/pack.ts";
 import { MemoryStore } from "../src/memory-store.ts";
 import { MerkleIndex } from "../src/merkle-index.ts";
 import { WalRepository } from "../src/wal.ts";
+import { sha256 } from "../src/wal-format.ts";
 
 const text = new TextEncoder();
 const oid = (n: number) => n.toString(16).padStart(40, "0");
@@ -34,6 +36,7 @@ class InventoryStore implements ObjectStore {
   readonly inner = new MemoryStore();
   readonly objects = new Map<string, Uint8Array>();
   gets = 0;
+  puts = 0;
 
   async get(key: string): Promise<StoredObject | null> {
     this.gets++;
@@ -45,6 +48,7 @@ class InventoryStore implements ObjectStore {
     bytes: Uint8Array,
     expectedVersion: string | null,
   ): Promise<boolean> {
+    this.puts++;
     const committed = await this.inner.put(key, bytes, expectedVersion);
     if (committed) this.objects.set(key, bytes.slice());
     return committed;
@@ -55,6 +59,13 @@ type Category = "root" | "packs" | "records" | "manifests" | "receipt-index";
 type Measurement = {
   objects: Record<Category, number>;
   bytes: Record<Category, number>;
+  liveBytes: Record<Category, number>;
+  unreferencedBytes: Record<Category, number>;
+  totals: {
+    storedBytes: number;
+    currentFormatBytes: number;
+    unreferencedBytes: number;
+  };
   live: {
     manifests: number;
     packs: number;
@@ -98,13 +109,30 @@ function measure(store: InventoryStore, liveKeys: Set<string>): Measurement {
     bytes[name] += value.byteLength;
   }
   const live = { manifests: 0, packs: 0, records: 0, "receipt-index": 0 };
+  const liveBytes = Object.fromEntries(
+    categories.map((name) => [name, 0]),
+  ) as Record<Category, number>;
   for (const key of liveKeys) {
     const name = category(key);
+    assert.ok(store.objects.has(key), `missing live object: ${key}`);
+    liveBytes[name] += store.objects.get(key)!.byteLength;
     if (name !== "root") live[name]++;
   }
+  const unreferencedBytes = Object.fromEntries(
+    categories.map((name) => [name, bytes[name] - liveBytes[name]]),
+  ) as Record<Category, number>;
+  const sum = (counts: Record<Category, number>) =>
+    Object.values(counts).reduce((a, b) => a + b, 0);
   return {
     objects,
     bytes,
+    liveBytes,
+    unreferencedBytes,
+    totals: {
+      storedBytes: sum(bytes),
+      currentFormatBytes: sum(liveBytes),
+      unreferencedBytes: sum(unreferencedBytes),
+    },
     live,
     obsolete: {
       manifests: objects.manifests - live.manifests,
@@ -113,6 +141,109 @@ function measure(store: InventoryStore, liveKeys: Set<string>): Measurement {
       "receipt-index": objects["receipt-index"] - live["receipt-index"],
     },
   };
+}
+
+/** Quiescent test-fixture inventory, NOT a concurrent GC implementation. */
+async function currentKeys(
+  store: InventoryStore,
+  repo: WalRepository,
+): Promise<Set<string>> {
+  const rootKey = "repos/default/root.json";
+  const before = await store.get(rootKey);
+  const snapshot = await repo.load();
+  const keys = new Set<string>();
+  if (!before) {
+    assert.equal(snapshot.sequence, 0);
+    return keys;
+  }
+  keys.add(rootKey);
+  if (snapshot.checkpoint) {
+    keys.add(`repos/default/manifests/${snapshot.checkpoint.manifestHash}`);
+    for (const packID of snapshot.checkpoint.packIds)
+      keys.add(`repos/default/packs/${packID}`);
+    const index = new MerkleIndex(store, "repos/default/receipt-index/");
+    const ids = new Set<string>();
+    const sequences = new Set<number>();
+    await index.visit(
+      snapshot.checkpoint.receiptRoot,
+      async (hash, idHash, recordHash) => {
+        keys.add(`repos/default/receipt-index/${hash}`);
+        if (idHash !== undefined) {
+          assert.ok(recordHash);
+          const path = `repos/default/records/${recordHash}`;
+          const stored = await store.get(path);
+          assert.ok(stored);
+          assert.equal(await sha256(stored.bytes), recordHash);
+          const record = JSON.parse(new TextDecoder().decode(stored.bytes));
+          assert.equal(await sha256(text.encode(record.id)), idHash);
+          assert.deepEqual(await repo.lookupRecord(record.id), record);
+          assert.equal(ids.has(record.id), false);
+          assert.equal(sequences.has(record.sequence), false);
+          ids.add(record.id);
+          sequences.add(record.sequence);
+          keys.add(path);
+        }
+      },
+    );
+    assert.equal(ids.size, snapshot.sequence);
+    for (let n = 1; n <= snapshot.sequence; n++)
+      assert.equal(sequences.has(n), true);
+  } else {
+    let hash = snapshot.tip;
+    for (const record of snapshot.records.slice().reverse()) {
+      assert.ok(hash);
+      keys.add(`repos/default/records/${hash}`);
+      if (record.pack) keys.add(`repos/default/packs/${record.pack}`);
+      hash = record.parent;
+    }
+    assert.equal(hash, null);
+  }
+  const after = await store.get(rootKey);
+  assert.equal(after?.version, before.version);
+  assert.deepEqual(after?.bytes, before.bytes);
+  return keys;
+}
+
+async function validateRetainedCopy(
+  store: InventoryStore,
+  repo: WalRepository,
+): Promise<void> {
+  const keys = await currentKeys(store, repo);
+  const retained = new InventoryStore();
+  for (const key of keys)
+    await retained.put(key, store.objects.get(key)!, null);
+  const cold = new WalRepository(retained, new NativeGitEngine());
+  const snapshot = await cold.load();
+  assert.deepEqual((await cold.loadRefs()).refs, snapshot.refs);
+  const writes = retained.puts;
+  let receipts = 0;
+  for (const key of keys) {
+    if (!key.includes("/records/")) continue;
+    const record = JSON.parse(
+      new TextDecoder().decode(retained.objects.get(key)!),
+    );
+    assert.deepEqual(await cold.lookupRecord(record.id), record);
+    const receipt = await cold.commit({
+      id: record.id,
+      updates: record.updates,
+      ...(record.pack
+        ? { pack: retained.objects.get(`repos/default/packs/${record.pack}`)! }
+        : {}),
+    });
+    assert.deepEqual(receipt, {
+      id: record.id,
+      sequence: record.sequence,
+      replayed: true,
+    });
+    receipts++;
+  }
+  assert.equal(receipts, snapshot.sequence);
+  assert.equal(
+    retained.puts,
+    writes,
+    "all retained historical retries remain write-free",
+  );
+  assert.equal((await cold.load()).sequence, snapshot.sequence);
 }
 
 async function buildPack(): Promise<{ pack: Uint8Array; commit: string }> {
@@ -151,12 +282,14 @@ async function runScenario(
   at128: Awaited<ReturnType<WalRepository["load"]>>;
   at260: Awaited<ReturnType<WalRepository["load"]>>;
   measurement: Measurement;
+  timeline: { sequence: number; measurement: Measurement }[];
 }> {
   const store = new InventoryStore();
   const engine: GitEngine = new NativeGitEngine();
   const repo = new WalRepository(store, engine);
   let current = newTagEachTime ? null : commitOID;
   let at128: Snapshot | undefined;
+  const timeline: { sequence: number; measurement: Measurement }[] = [];
   for (let n = 1; n <= 260; n++) {
     const name = newTagEachTime
       ? n === 1
@@ -176,27 +309,20 @@ async function runScenario(
       assert.equal(at128.records.length, 128);
       await repo.checkpoint();
     }
+    if (n === 128 || n === 192)
+      timeline.push({
+        sequence: n,
+        measurement: measure(store, await currentKeys(store, repo)),
+      });
   }
   const at260 = await repo.load();
   assert.equal(at260.sequence, 260);
   assert.equal(at260.records.length, 1);
   assert.equal(Object.keys(at260.refs).length, newTagEachTime ? 260 : 1);
 
-  const liveKeys = new Set<string>(["repos/default/root.json"]);
-  const root = await store.inner.get("repos/default/root.json");
-  assert.ok(root && at260.checkpoint);
-  liveKeys.add(`repos/default/manifests/${at260.checkpoint.manifestHash}`);
-  for (const packID of at260.checkpoint.packIds)
-    liveKeys.add(`repos/default/packs/${packID}`);
-  for (const key of store.objects.keys())
-    if (key.includes("/records/")) liveKeys.add(key);
-  if (at260.checkpoint.receiptRoot) {
-    const index = new MerkleIndex(store, "repos/default/receipt-index/");
-    await index.visit(at260.checkpoint.receiptRoot, (hash) => {
-      liveKeys.add(`repos/default/receipt-index/${hash}`);
-    });
-  }
+  const liveKeys = await currentKeys(store, repo);
   const measurement = measure(store, liveKeys);
+  timeline.push({ sequence: 260, measurement });
   assert.equal(measurement.objects.records, 260);
   assert.equal(measurement.objects.manifests, 133);
   assert.equal(
@@ -217,6 +343,7 @@ async function runScenario(
     at128,
     at260,
     measurement,
+    timeline,
   };
 }
 
@@ -232,6 +359,24 @@ test("measures checkpoint metadata growth for fixed refs and growing tags", asyn
   );
 
   for (const scenario of [fixed, tags]) {
+    await validateRetainedCopy(scenario.store, scenario.repo);
+    const objects = await readObjects(scenario.at260.packs);
+    const reachable = new Set<string>();
+    const pending = Object.values(scenario.at260.refs);
+    while (pending.length) {
+      const id = pending.pop()!;
+      if (reachable.has(id)) continue;
+      const object = objects.get(id);
+      assert.ok(object);
+      reachable.add(id);
+      pending.push(...objectLinks(object).map((link) => link.oid));
+    }
+    assert.equal(objects.size, 3);
+    assert.equal(
+      reachable.size,
+      objects.size,
+      "fixture pack contains only current-ref reachable Git objects",
+    );
     const cold = new WalRepository(scenario.store, new NativeGitEngine());
     for (const n of [1, 64, 128, 192, 260]) {
       const record = await cold.lookupRecord(`growth-${n}`);
@@ -259,6 +404,66 @@ test("measures checkpoint metadata growth for fixed refs and growing tags", asyn
     tags.measurement.bytes.manifests > fixed.measurement.bytes.manifests,
   );
   console.log(
-    JSON.stringify({ fixed: fixed.measurement, growingTags: tags.measurement }),
+    JSON.stringify({
+      fixed: fixed.measurement,
+      growingTags: tags.measurement,
+      retentionTimeline: {
+        fixed: fixed.timeline.map(({ sequence, measurement }) => ({
+          sequence,
+          ...measurement.totals,
+          recordsBytes: measurement.liveBytes.records,
+          indexBytes: measurement.liveBytes["receipt-index"],
+          manifestBytes: measurement.liveBytes.manifests,
+        })),
+        growingTags: tags.timeline.map(({ sequence, measurement }) => ({
+          sequence,
+          ...measurement.totals,
+          recordsBytes: measurement.liveBytes.records,
+          indexBytes: measurement.liveBytes["receipt-index"],
+          manifestBytes: measurement.liveBytes.manifests,
+        })),
+      },
+    }),
+  );
+});
+
+test("empty and one-commit storage baselines distinguish fixed overhead from history", async () => {
+  const { pack, commit } = await buildPack();
+  const store = new InventoryStore();
+  const repo = new WalRepository(store, new NativeGitEngine());
+  const baselines: Record<string, Measurement> = {};
+  baselines.emptyLegacy = measure(store, await currentKeys(store, repo));
+  const emptyStore = new InventoryStore();
+  const emptyRepo = new WalRepository(emptyStore, new NativeGitEngine());
+  await emptyRepo.checkpoint();
+  baselines.emptyCheckpoint = measure(
+    emptyStore,
+    await currentKeys(emptyStore, emptyRepo),
+  );
+  await repo.commit({
+    id: "growth-1",
+    pack,
+    updates: [update("refs/heads/main", null, commit)],
+  });
+  baselines.oneLegacy = measure(store, await currentKeys(store, repo));
+  await repo.checkpoint();
+  baselines.oneCheckpoint = measure(store, await currentKeys(store, repo));
+  await validateRetainedCopy(store, repo);
+  assert.equal(baselines.emptyLegacy.totals.storedBytes, 0);
+  assert.equal(baselines.oneCheckpoint.totals.unreferencedBytes, 0);
+  // A valid-address but unindexed record must never be counted as required retry data.
+  const orphanBytes = text.encode(JSON.stringify({ unpublished: true }));
+  await store.put(
+    `repos/default/records/${await sha256(orphanBytes)}`,
+    orphanBytes,
+    null,
+  );
+  const withOrphan = measure(store, await currentKeys(store, repo));
+  assert.equal(withOrphan.live.records, 1);
+  assert.equal(withOrphan.obsolete.records, 1);
+  assert.equal(withOrphan.unreferencedBytes.records, orphanBytes.length);
+  await validateRetainedCopy(store, repo);
+  console.log(
+    JSON.stringify({ baselines, injectedOrphanBytes: orphanBytes.length }),
   );
 });
