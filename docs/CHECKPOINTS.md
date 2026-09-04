@@ -11,6 +11,8 @@ ntig 0.2 adds an **explicit, one-way storage-format upgrade**, not automatic com
 
 Migration verifies the legacy snapshot and preserves the original record content addresses. It publishes the receipt index and manifest before conditionally replacing the **same** `root.json`. It neither deletes legacy objects nor creates a second mutable authority. A migration loser cannot revert another writer's root. Before the root write, interruptions leave only harmless unpublished metadata; after it, a cold reader can recover without listing the bucket.
 
+From 0.2.1, migration bulk-builds the canonical receipt index bottom-up, publishing only the final tree nodes instead of intermediate trees for each historical insertion. The root hash and format are unchanged. This reduces new migration metadata; it does not reclaim objects created by earlier versions. Input is bounded by the configured legacy `maxRecords` limit.
+
 ## Format 2
 
 ```text
@@ -35,6 +37,8 @@ Format 2 removes the legacy `maxRecords` transaction ceiling, not the other work
 - Pushes still load/verify all packs and publish immutable metadata before the root CAS. Fetches still download all stored packs and decode the loaded snapshot again. Cheap advertisements are **not yet selective object/pack fetching**.
 
 Content hashes detect missing/corrupt immutable data; they do not authenticate a maliciously replaced root. Restrict bucket write access. Application authority remains the host's responsibility and must still be fenced across Nostr state changes and Git publication.
+
+These counts describe uncached operations. The optional 0.2.1 request-scoped read session can reuse immutable objects between operations while always re-reading the root. A fresh session preserves the two-GET advertisement path. Full validation still runs, and a fresh session is required for an independent storage-health check. See [read efficiency](READ-EFFICIENCY.md).
 
 ## Next safety gate
 

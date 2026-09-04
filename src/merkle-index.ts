@@ -172,6 +172,47 @@ export class MerkleIndex {
     return result.root;
   }
 
+  /**
+   * Build an index in one publication pass. Validation is deliberately
+   * synchronous so malformed input cannot leave any content-addressed nodes
+   * behind. The resulting trie is canonical and therefore has the same root
+   * as inserting the equivalent entries one at a time.
+   */
+  async buildFromEntries(
+    entries: readonly (readonly [string, string])[],
+    maxEntries = 10_000,
+  ): Promise<string | null> {
+    if (!Array.isArray(entries))
+      throw new IntegrityError("Invalid Merkle index entries");
+    if (!Number.isSafeInteger(maxEntries) || maxEntries < 1)
+      throw new LimitError("Invalid Merkle index entry limit");
+    if (entries.length > maxEntries)
+      throw new LimitError("Merkle index entry limit exceeded");
+
+    // Copy, validate, and sort before the first await. In particular, reject
+    // duplicate keys even when their values happen to be identical.
+    const sorted: [string, string][] = [];
+    for (const entry of entries) {
+      if (
+        !Array.isArray(entry) ||
+        entry.length !== 2 ||
+        !validKey(entry[0]) ||
+        !validKey(entry[1])
+      )
+        throw new IntegrityError(
+          "Merkle index keys and values must be lowercase SHA-256 hashes",
+        );
+      sorted.push([entry[0], entry[1]]);
+    }
+    sorted.sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i - 1]![0] === sorted[i]![0])
+        throw new ConflictError("Merkle index contains duplicate key");
+    }
+    if (sorted.length === 0) return null;
+    return this.build(sorted, 0);
+  }
+
   private async insertNode(
     root: string,
     key: string,

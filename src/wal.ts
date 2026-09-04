@@ -16,6 +16,7 @@ import type {
   WalRecord,
 } from "./contracts.ts";
 import { CheckpointStore } from "./checkpoint-store.ts";
+import { ObjectReadSession, type ReadSessionOptions } from "./read-session.ts";
 
 import {
   DEFAULT_WAL_LIMITS,
@@ -72,6 +73,26 @@ export class WalRepository {
 
   async load(): Promise<Snapshot> {
     return this.loadRoot(await this.store.get(`${this.prefix}root.json`));
+  }
+
+  /** Reuse immutable reads within one awaited operation; roots and authority stay fresh. */
+  async withReadSession<T>(
+    operation: (repository: WalRepository) => Promise<T>,
+    options: ReadSessionOptions = {},
+  ): Promise<T> {
+    const store = new ObjectReadSession(this.store, {
+      ...options,
+      prefix: this.prefix,
+    });
+    const repository = new WalRepository(store, this.engine, {
+      prefix: this.prefix,
+      limits: this.limits,
+    });
+    try {
+      return await operation(repository);
+    } finally {
+      store.close();
+    }
   }
 
   private async loadRoot(root: StoredObject | null): Promise<Snapshot> {

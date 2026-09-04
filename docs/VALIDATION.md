@@ -2,7 +2,7 @@
 
 Run `npm ci && npm run check` from the repository root. Run `npm audit` separately when evaluating current dependency advisories. All fixtures and R2 data are local; no Cloudflare deployment or account is used.
 
-Verified 2026-09-04 for 0.2.0: **132 tests passed**, typecheck and self-contained Worker build passed, and `npm audit` reported zero vulnerabilities. The library package additionally passes fresh Node/TypeScript consumer checks and byte-for-byte reproducibility checks. These counts describe this iteration, not an assurance about future dependency advisories or untested workloads.
+Verified 2026-09-04 for 0.2.1: **152 tests passed**, typecheck and self-contained Worker build passed, and `npm audit` reported zero vulnerabilities. The library package additionally passes fresh Node/TypeScript consumer checks (including scoped retry and use-after-close rejection) and same-toolchain byte-for-byte reproducibility checks. Release validation used Node 22.22.3 / npm 10.9.8. These counts describe this iteration, not an assurance about future dependency advisories or untested workloads.
 
 ## What is exercised
 
@@ -14,6 +14,8 @@ Verified 2026-09-04 for 0.2.0: **132 tests passed**, typecheck and self-containe
 - Before/after failure injection at each publication write, with assertions that the injection actually occurred.
 - Explicit empty/nonempty checkpoint migration, legacy byte preservation, interrupted index/manifest/root publication, concurrent migration and commit, more than 128 checkpointed transactions, retained historical receipt replay, same-ID competing writers, and missing/corrupt older receipt paths failing closed.
 - Exactly two GETs for checkpointed metadata-only reads, bounded current-state loads, safe HTTP errors, and accepted-state filtering under the same fence. Hidden-PR correction retries still work after their record leaves the normal snapshot.
+- Request-scoped read reuse with unchanged Git-validation counts, fresh authority/root reads, caller-buffer isolation, LRU payload/entry bounds, misses/errors uncached, conditional/lost-acknowledgement writes, in-flight read invalidation and callback cleanup. Test-only workerd HTTP pushes and reads use sessions; independent post-restart advertisements each assert exactly two underlying R2 GETs.
+- Canonical bulk receipt construction matching incremental index roots, pre-write rejection of invalid/duplicate/over-budget inputs, fixed-ref versus growing-tag physical metadata inventories, and serialized host-style metadata byte/key reservations across quota failures, orphan publication and uncertain writes. Indexed identical retries remain write-free at full capacity. These fixtures do not add a runtime quota ledger or garbage collector.
 - Cold restore, losing CAS writers, atomic ref changes, reused retry IDs, tenant isolation, corrupted storage, and a deterministic 200-transaction model test.
 - Real local R2 conditional writes and concurrent CAS, byte/key limits and buffer ownership.
 - HTTP framing, fail-closed pre-body auth, exact routing, capability advertisements, rejected stale transactions, exact reachable fetch object sets, inaccessible dangling objects and filtered pack contents.

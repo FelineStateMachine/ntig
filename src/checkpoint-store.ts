@@ -353,7 +353,7 @@ export class CheckpointStore {
     }
     if (totalPackBytes > this.limits.maxTotalPackBytes)
       throw new LimitError("Repository packed-byte limit exceeded");
-    let receiptRoot: string | null = null;
+    const receiptEntries: [string, string][] = [];
     for (let i = 0; i < snapshot.records.length; i++) {
       const record = snapshot.records[i]!;
       const recordHash = recordHashes[i]!;
@@ -377,12 +377,12 @@ export class CheckpointStore {
         throw new IntegrityError(
           "Legacy record bytes do not match content address",
         );
-      receiptRoot = await this.index.insert(
-        receiptRoot,
-        await keyFor(record.id),
-        recordHash,
-      );
+      receiptEntries.push([await keyFor(record.id), recordHash]);
     }
+    const receiptRoot = await this.index.buildFromEntries(
+      receiptEntries,
+      this.limits.maxRecords,
+    );
     const packIds: string[] = [];
     for (const pack of snapshot.packs) {
       const id = await sha256(pack);

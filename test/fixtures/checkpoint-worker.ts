@@ -2,22 +2,42 @@ import { NativeGitEngine } from "../../src/git/engine.ts";
 import { R2ObjectStore } from "../../src/r2-store.ts";
 import { WalRepository } from "../../src/wal.ts";
 import { createGitHandler } from "../../src/http.ts";
+import type { ObjectStore } from "../../src/contracts.ts";
 
 /** Test-only workerd harness; intentionally not imported by the production Worker. */
 function repository(env: { WAL: R2Bucket }) {
-  return new WalRepository(
-    new R2ObjectStore(env.WAL, { prefix: "checkpoint-test" }),
-    new NativeGitEngine(),
-    { prefix: "repos/test/" },
-  );
+  let gets = 0;
+  const inner = new R2ObjectStore(env.WAL, { prefix: "checkpoint-test" });
+  const store: ObjectStore = {
+    get: async (key) => {
+      gets++;
+      return inner.get(key);
+    },
+    put: (key, bytes, expected) => inner.put(key, bytes, expected),
+  };
+  return {
+    repo: new WalRepository(store, new NativeGitEngine(), {
+      prefix: "repos/test/",
+    }),
+    getCount: () => gets,
+  };
 }
 export default {
   async fetch(request: Request, env: { WAL: R2Bucket }): Promise<Response> {
     if (new URL(request.url).pathname.startsWith("/repo.git")) {
-      return createGitHandler(repository(env), {
+      const { repo, getCount } = repository(env);
+      const handlerOptions = {
         prefix: "/repo.git",
         authorizePush: () => true,
-      })(request);
+      };
+      // Every request gets one short-lived session. Sessions forward writes,
+      // invalidate cached objects around them, and close even on exceptions.
+      const response = await repo.withReadSession((session) =>
+        createGitHandler(session, handlerOptions)(request),
+      );
+      const headers = new Headers(response.headers);
+      headers.set("x-test-object-gets", String(getCount()));
+      return new Response(response.body, { status: response.status, headers });
     }
     if (request.method !== "POST")
       return new Response("method not allowed", { status: 405 });
@@ -29,7 +49,7 @@ export default {
       new?: string | null;
       pack?: string;
     };
-    const repo = repository(env);
+    const { repo } = repository(env);
     if (body.op === "commit") {
       const pack = body.pack
         ? Uint8Array.from(atob(body.pack), (c) => c.charCodeAt(0))

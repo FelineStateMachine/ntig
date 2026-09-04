@@ -61,7 +61,7 @@ try {
   writeFileSync(
     nodeCheck,
     `import assert from "node:assert/strict";
-import { MemoryStore, NativeGitEngine, WalRepository, createAcceptedStateRepository, MeteredObjectStore } from "ntig";
+import { MemoryStore, NativeGitEngine, WalRepository, createAcceptedStateRepository, MeteredObjectStore, ObjectReadSession, RepositoryUnavailableError } from "ntig";
 if (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore].every(Boolean)) throw new Error("missing export");
 const wal = new WalRepository(new MemoryStore(), new NativeGitEngine());
 const request = { id: "packaged-retry", updates: [{ name: "refs/heads/absent", old: null, new: null }] };
@@ -72,6 +72,15 @@ assert.equal((await wal.load()).records.length, 1);
 assert.equal((await wal.loadRefs()).sequence, 2);
 assert.equal((await wal.lookupRecord(request.id)).sequence, 1);
 assert.deepEqual(await wal.commit(request), { id: request.id, sequence: 1, replayed: true });
+assert.equal(typeof ObjectReadSession, "function");
+let escaped;
+await wal.withReadSession(async scoped => {
+  escaped = scoped;
+  assert.equal((await scoped.loadRefs()).sequence, 2);
+  assert.deepEqual(await scoped.commit(request), { id: request.id, sequence: 1, replayed: true });
+});
+await assert.rejects(escaped.loadRefs(), RepositoryUnavailableError);
+assert.equal((await wal.loadRefs()).sequence, 2);
 `,
   );
   run(node, [nodeCheck], consumer);

@@ -41,6 +41,8 @@ Implemented in the checkpoint iteration (opt-in; see [upgrade and guarantees](CH
 
 - Single-root format-2 manifests and retained, indexed retry receipts; no legacy history replay after migration.
 - Metadata-only advertisements through `loadRefs()`, with unchanged accepted-state visibility rules.
+- Optional request-scoped immutable read reuse, preserving fresh roots, authorization and publication recovery (0.2.1).
+- Bulk migration index construction without intermediate trees; matched fixed-ref/growing-ref metadata inventories and host-style byte/key reservation fault tests (0.2.1). See [measurements and budget boundaries](READ-EFFICIENCY.md).
 
 Still not implemented or established:
 

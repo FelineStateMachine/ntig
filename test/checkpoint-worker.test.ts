@@ -188,6 +188,20 @@ test("checkpoint migration bounds WAL history and survives workerd restart", asy
   });
   assert.equal(replay.replayed, true);
   assert.equal(replay.sequence, 1);
+  const ad1 = await mf.dispatchFetch(
+    "https://checkpoint.test/repo.git/info/refs?service=git-upload-pack",
+  );
+  const ad2 = await mf.dispatchFetch(
+    "https://checkpoint.test/repo.git/info/refs?service=git-upload-pack",
+  );
+  assert.equal(ad1.status, 200);
+  assert.equal(ad2.status, 200);
+  assert.equal(ad1.headers.get("x-test-object-gets"), "2");
+  assert.equal(ad2.headers.get("x-test-object-gets"), "2");
+  assert.deepEqual(
+    new Uint8Array(await ad1.arrayBuffer()),
+    new Uint8Array(await ad2.arrayBuffer()),
+  );
   const clone = join(dir, "post-checkpoint-clone");
   await execFile("git", ["clone", remote, clone], {
     timeout: 30_000,
