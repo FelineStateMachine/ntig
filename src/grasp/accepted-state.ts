@@ -6,6 +6,7 @@ import {
   type CommitRequest,
   type GitRepository,
   type Refs,
+  type RefUpdate,
 } from "../contracts.ts";
 import { validateRefName } from "../wal.ts";
 
@@ -107,17 +108,13 @@ export function createAcceptedStateRepository(
               refs[name] = oid;
           } else refs[name] = oid;
         }
-        // Never advertise a stale branch tip as the accepted state's HEAD.
+        // HEAD names the authority-selected branch, whose materialized old tip
+        // remains useful while new state awaits Git data (including clone/checkout).
         const head = state?.head ?? null;
         return {
           ...snapshot,
           refs,
-          headRef:
-            head !== null &&
-            snapshot.refs[head] !== undefined &&
-            snapshot.refs[head] !== state!.refs[head]
-              ? null
-              : head,
+          headRef: head,
         };
       }),
     commit: (request: CommitRequest) => {
@@ -130,6 +127,7 @@ export function createAcceptedStateRepository(
       return run(async () => {
         const state = captureState(await options.lookupState());
         const tips = new Map<string, string | null | false>();
+        const corrections: RefUpdate[] = [];
         for (const update of captured.updates) {
           validateRefName(update.name);
           const pr = prPattern.exec(update.name);
@@ -150,6 +148,12 @@ export function createAcceptedStateRepository(
               throw new AuthorizationError(
                 "PR tip is not authorized by an accepted event",
               );
+            if (
+              update.old === null &&
+              typeof tip === "string" &&
+              tip === update.new
+            )
+              corrections.push(update);
           } else {
             if (
               !state ||
@@ -159,6 +163,43 @@ export function createAcceptedStateRepository(
               throw new AuthorizationError(
                 "Ref does not match accepted repository state",
               );
+          }
+        }
+        if (corrections.length) {
+          // A known-wrong PR tip is hidden in advertisements. Stock Git therefore
+          // submits old=null when correcting it. Translate only this authorized
+          // view mismatch; the WAL still checks the exact physical old and root CAS.
+          // The authority fence must remain held across this read and the commit.
+          const physical = await repo.load().catch((cause: unknown) => {
+            if (cause instanceof LimitError) throw cause;
+            throw new RepositoryUnavailableError(
+              "Cannot reconcile PR repository view",
+              { cause },
+            );
+          });
+          const prior = physical.records.find(
+            (record) => record.id === captured.id,
+          );
+          for (const update of corrections) {
+            const original = prior?.updates.find(
+              (item) => item.name === update.name,
+            );
+            if (
+              original &&
+              original.new === update.new &&
+              original.old !== null &&
+              original.old !== original.new
+            ) {
+              // A retry after successful correction now sees a visible correct
+              // tip. Reconstruct its physical transaction; WAL request hashing
+              // still rejects any other altered ref, pack, or transaction data.
+              update.old = original.old;
+            } else if (
+              physical.refs[update.name] !== undefined &&
+              physical.refs[update.name] !== update.new
+            ) {
+              update.old = physical.refs[update.name]!;
+            }
           }
         }
         return repo.commit(captured);

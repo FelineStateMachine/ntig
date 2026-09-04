@@ -2,7 +2,7 @@
 
 Run `npm ci && npm run check` from the repository root. Run `npm audit` separately when evaluating current dependency advisories. All fixtures and R2 data are local; no Cloudflare deployment or account is used.
 
-Verified 2026-09-04: **84 tests passed**, typecheck and self-contained Worker build passed, and `npm audit` reported zero vulnerabilities. The library package additionally passes fresh Node/TypeScript consumer checks and byte-for-byte reproducibility checks. These counts describe this iteration, not an assurance about future dependency advisories or untested workloads.
+Verified 2026-09-04: **90 tests passed**, typecheck and self-contained Worker build passed, and `npm audit` reported zero vulnerabilities. The library package additionally passes fresh Node/TypeScript consumer checks and byte-for-byte reproducibility checks. These counts describe this iteration, not an assurance about future dependency advisories or untested workloads.
 
 ## What is exercised
 
@@ -15,7 +15,8 @@ Verified 2026-09-04: **84 tests passed**, typecheck and self-contained Worker bu
 - Cold restore, losing CAS writers, atomic ref changes, reused retry IDs, tenant isolation, corrupted storage, and a deterministic 200-transaction model test.
 - Real local R2 conditional writes and concurrent CAS, byte/key limits and buffer ownership.
 - HTTP framing, fail-closed pre-body auth, exact routing, capability advertisements, rejected stale transactions, exact reachable fetch object sets, inaccessible dangling objects and filtered pack contents.
-- Accepted-state and PR authority, pending-state old-OID preservation through actual WAL commits, HEAD suppression/selection, anonymous PR deletion denial, request capture, and mixed unauthorized transactions with no publication.
+- Accepted-state and PR authority, pending-state old-OID and signed HEAD preservation through actual WAL commits, anonymous PR deletion denial, request capture, and mixed unauthorized transactions with no publication.
+- Stock Git corrections of hidden pre-event PR tips, including observed zero-old commands; physical CAS race rejection, lost-acknowledgement recovery and receipt replay after later commits.
 - HTTP and object-store byte/operation observations, safe error classification, backend-error redaction, and response-budget checks before committing a successful push.
 - A bundled Worker runs inside workerd with persisted R2. Real Git pushes, clones, changes/fetches, creates annotated tags, deletes/force-updates branches, and creates multiple refs atomically. A fresh clone after workerd restart passes `git fsck`. Blobless and treeless clones perform lazy checkout successfully.
 

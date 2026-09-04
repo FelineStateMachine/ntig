@@ -218,13 +218,13 @@ test("HEAD comes only from accepted authority, never a branch heuristic", async 
   assert.equal((await noHead.load()).headRef, null);
 });
 
-test("stale or missing accepted HEAD is not advertised", async () => {
+test("HEAD retains its signed branch while pending or unborn", async () => {
   const staleRepo = fakeRepo(snapshot({ "refs/heads/main": OID2 }));
   const stale = createAcceptedStateRepository(staleRepo.repo, {
     lookupState: async () =>
       state({ "refs/heads/main": OID }, "refs/heads/main"),
   });
-  assert.equal((await stale.load()).headRef, null);
+  assert.equal((await stale.load()).headRef, "refs/heads/main");
 
   const missingRepo = fakeRepo(snapshot({}));
   const missing = createAcceptedStateRepository(missingRepo.repo, {
