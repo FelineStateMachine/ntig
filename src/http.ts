@@ -68,7 +68,15 @@ const encoder = new TextEncoder();
 const decoder = new TextDecoder("utf-8", { fatal: true });
 const OID = /^[a-f0-9]{40}$/;
 const ZERO = "0".repeat(40);
-const RECEIVE_CAPS = ["report-status", "delete-refs", "ofs-delta", "atomic"];
+const RECEIVE_CAPS = [
+  "report-status",
+  "delete-refs",
+  "ofs-delta",
+  "atomic",
+  // libgit2 sends this capability for receive-pack when it is available.
+  // Receive reports use channel 1 framing below.
+  "side-band-64k",
+];
 const UPLOAD_CAPS = [
   "side-band-64k",
   "ofs-delta",
@@ -96,6 +104,20 @@ function pkt(payload: string | Uint8Array): Uint8Array {
 }
 function flush(): Uint8Array {
   return encoder.encode("0000");
+}
+function sidebandPacket(payload: string): Uint8Array {
+  return pkt(join([Uint8Array.of(1), pkt(payload)]));
+}
+function sidebandFlush(): Uint8Array {
+  return pkt(join([Uint8Array.of(1), flush()]));
+}
+function receiveReport(
+  lines: readonly string[],
+  sideband: boolean,
+): Uint8Array {
+  return sideband
+    ? join([...lines.map(sidebandPacket), sidebandFlush(), flush()])
+    : join([...lines.map(pkt), flush()]);
 }
 function response(
   body: string | Uint8Array | null,
@@ -237,6 +259,37 @@ async function bodyBytes(
     reader.releaseLock();
   }
   return join(parts);
+}
+async function gunzipRequest(
+  compressed: Uint8Array,
+  limit: number,
+): Promise<Uint8Array> {
+  if (typeof DecompressionStream === "undefined")
+    throw new IntegrityError("Gzip decompression is unavailable");
+  const stream = new Response(compressed.slice().buffer).body!.pipeThrough(
+    new DecompressionStream("gzip"),
+  );
+  const reader = stream.getReader();
+  const chunks: Uint8Array[] = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const next = await reader.read();
+      if (next.done) break;
+      size += next.value.length;
+      if (size > limit) {
+        await reader.cancel("decompressed request limit");
+        throw new LimitError("Decompressed request exceeds fetch limit");
+      }
+      chunks.push(next.value);
+    }
+  } catch (error) {
+    if (error instanceof LimitError) throw error;
+    throw new IntegrityError("Invalid gzip request", { cause: error });
+  } finally {
+    reader.releaseLock();
+  }
+  return join(chunks);
 }
 
 class Packets {
@@ -506,6 +559,7 @@ export function createGitHandler(
   });
   const maxObjects = options.maxObjects ?? fetchLimits.maxObjects;
   const bodyLimit = options.maxBodyBytes ?? gitLimits.maxPackBytes + 256 * 1024;
+  const fetchRequestLimit = Math.min(bodyLimit, 1024 * 1024);
   const responseLimit =
     options.maxResponseBytes ?? fetchLimits.maxPackBytes + 1 * 1024 * 1024;
   const parsedPrefix = new URL(prefix, "https://nostrwal.invalid");
@@ -574,8 +628,34 @@ export function createGitHandler(
           `application/x-${service}-request`
         )
           return response("Unsupported media type\n", 415);
-        if (request.headers.has("content-encoding"))
+        const contentEncoding = request.headers
+          .get("content-encoding")
+          ?.toLowerCase();
+        if (receive && contentEncoding)
           return response("Content encoding is not supported\n", 415);
+        let gitRequest = request;
+        let requestWasDecoded = false;
+        if (fetch && contentEncoding === "gzip") {
+          const compressed = await bodyBytes(
+            request,
+            fetchRequestLimit,
+            (size) => {
+              requestBytes += size;
+            },
+          );
+          const expanded = await gunzipRequest(compressed, fetchRequestLimit);
+          const headers = new Headers(request.headers);
+          headers.delete("content-encoding");
+          headers.delete("content-length");
+          gitRequest = new Request(request.url, {
+            method: request.method,
+            headers,
+            body: expanded.slice().buffer,
+          });
+          requestWasDecoded = true;
+        } else if (contentEncoding) {
+          return response("Unsupported content encoding\n", 415);
+        }
         if (
           fetch &&
           (options.streamUploadPack || (repo.getObjectInfo && repo.getObject))
@@ -585,15 +665,19 @@ export function createGitHandler(
             ((request, streamOptions) =>
               streamUploadPack(repo, request, streamOptions))
           )(
-            request,
+            gitRequest,
             Object.freeze({
               maxResponseBytes: responseLimit,
               maxObjects,
               maxGraphEdges: maxEdges,
               gitLimits: fetchLimits,
-              observeRequestBytes: (size: number) => {
-                requestBytes += size;
-              },
+              ...(requestWasDecoded
+                ? {}
+                : {
+                    observeRequestBytes: (size: number) => {
+                      requestBytes += size;
+                    },
+                  }),
             }),
           );
           if (streamed !== null) {
@@ -608,9 +692,15 @@ export function createGitHandler(
             );
           }
         }
-        const bytes = await bodyBytes(request, bodyLimit, (size) => {
-          requestBytes += size;
-        });
+        const bytes = await bodyBytes(
+          gitRequest,
+          fetch ? fetchRequestLimit : bodyLimit,
+          requestWasDecoded
+            ? undefined
+            : (size) => {
+                requestBytes += size;
+              },
+        );
         // Recent Git clients probe receive-pack authorization with a standalone
         // flush before sending the real pack (notably for pushes over 1 MiB).
         // It is a successful empty exchange and must not be treated as a
@@ -628,13 +718,16 @@ export function createGitHandler(
             "application/x-git-upload-pack-result",
           );
         const parsed = receiveCommands(bytes, maxRefs);
-        const successBytes = parsed.caps.includes("report-status")
-          ? pkt("unpack ok\n").length +
-            4 +
-            parsed.updates.reduce(
-              (sum, update) => sum + pkt(`ok ${update.name}\n`).length,
-              0,
-            )
+        const reportsStatus = parsed.caps.includes("report-status");
+        const sideband = parsed.caps.includes("side-band-64k");
+        const successBytes = reportsStatus
+          ? receiveReport(
+              [
+                "unpack ok\n",
+                ...parsed.updates.map((update) => `ok ${update.name}\n`),
+              ],
+              sideband,
+            ).length
           : 0;
         if (successBytes > responseLimit)
           throw new LimitError("Push report exceeds response limit");
@@ -650,29 +743,23 @@ export function createGitHandler(
           errorCode = classified.code;
           rejection = classified.message;
         }
-        if (!parsed.caps.includes("report-status"))
+        if (!reportsStatus)
           return response(
             rejection ? "Push rejected\n" : null,
             rejection ? 409 : 200,
             "application/x-git-receive-pack-result",
           );
         const safeError = rejection?.replace(/[\r\n\0]/g, " ").slice(0, 512);
-        const report = [
-          pkt(rejection ? `unpack ${safeError}\n` : "unpack ok\n"),
+        const reportLines = [
+          rejection ? `unpack ${safeError}\n` : "unpack ok\n",
           ...parsed.updates.map((update) =>
-            pkt(
-              rejection
-                ? `ng ${update.name} ${safeError}\n`
-                : `ok ${update.name}\n`,
-            ),
+            rejection
+              ? `ng ${update.name} ${safeError}\n`
+              : `ok ${update.name}\n`,
           ),
-          flush(),
         ];
-        return response(
-          join(report),
-          200,
-          "application/x-git-receive-pack-result",
-        );
+        const report = receiveReport(reportLines, sideband);
+        return response(report, 200, "application/x-git-receive-pack-result");
       } catch (error) {
         const classified = classifyError(error);
         errorCode = classified.code;

@@ -6,6 +6,7 @@ import { MemoryStore } from "../src/memory-store.ts";
 import { NativeGitEngine } from "../src/git/engine.ts";
 import { encodePack } from "../src/git/encode.ts";
 import { decodePack } from "../src/git/pack.ts";
+import { gzipSync } from "fflate";
 
 const enc = new TextEncoder();
 async function oid(type: string, data: Uint8Array) {
@@ -33,6 +34,34 @@ const cat = (...xs: Uint8Array[]) => {
   }
   return o;
 };
+function decodeSidebandReport(bytes: Uint8Array): string[] {
+  const lines: string[] = [];
+  let offset = 0;
+  let reportFlush = false;
+  while (offset < bytes.length) {
+    const header = new TextDecoder().decode(bytes.slice(offset, offset + 4));
+    if (header === "0000") {
+      assert.equal(offset + 4, bytes.length);
+      assert.ok(reportFlush);
+      return lines;
+    }
+    const length = Number.parseInt(header, 16);
+    assert.ok(Number.isFinite(length) && length >= 4);
+    const payload = bytes.slice(offset + 4, offset + length);
+    assert.equal(payload[0], 1);
+    const innerHeader = new TextDecoder().decode(payload.slice(1, 5));
+    const innerLength = Number.parseInt(innerHeader, 16);
+    if (innerHeader === "0000") {
+      assert.equal(payload.length, 5);
+      reportFlush = true;
+    } else {
+      assert.equal(innerLength, payload.length - 1);
+      lines.push(new TextDecoder().decode(payload.slice(5)));
+    }
+    offset += length;
+  }
+  assert.fail("missing outer sideband flush");
+}
 async function fixture() {
   const blob = enc.encode("hello\n"),
     bo = await oid("blob", blob);
@@ -231,7 +260,48 @@ test("upload returns the exact reachable graph and rejects unreachable wants", a
   }
 });
 
-test("receive requires a flush, rejects unsupported capabilities and commits nothing", async () => {
+test("upload accepts bounded gzip-compressed negotiation requests", async () => {
+  const { repo, co } = await fixture();
+  const h = createGitHandler(repo);
+  const body = cat(pkt(`want ${co} ofs-delta\n`), flush(), pkt("done\n"));
+  const result = await h(
+    new Request("https://x/repo.git/git-upload-pack", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-git-upload-pack-request",
+        "content-encoding": "gzip",
+      },
+      body: gzipSync(body),
+    }),
+  );
+  assert.equal(result.status, 200);
+  assert.match(new TextDecoder().decode(await result.arrayBuffer()), /PACK/);
+  const malformed = await h(
+    new Request("https://x/repo.git/git-upload-pack", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-git-upload-pack-request",
+        "content-encoding": "gzip",
+      },
+      body: new Uint8Array([31, 139, 8, 0]),
+    }),
+  );
+  assert.equal(malformed.status, 400);
+  const limited = createGitHandler(repo, { maxBodyBytes: 100 });
+  const expanded = await limited(
+    new Request("https://x/repo.git/git-upload-pack", {
+      method: "POST",
+      headers: {
+        "content-type": "application/x-git-upload-pack-request",
+        "content-encoding": "gzip",
+      },
+      body: gzipSync(new Uint8Array(101).fill(65)),
+    }),
+  );
+  assert.equal(expanded.status, 413);
+});
+
+test("receive requires a flush, negotiates sideband reports, and rejects unknown capabilities", async () => {
   const { repo, co } = await fixture();
   const h = createGitHandler(repo, { authorizePush: () => true });
   const command = `${"0".repeat(40)} ${co} refs/heads/side`;
@@ -253,19 +323,37 @@ test("receive requires a flush, rejects unsupported capabilities and commits not
     "application/x-git-receive-pack-result",
   );
   assert.equal((await post(pkt(command))).status, 400);
-  assert.equal(
-    (await post(cat(pkt(`${command}\0report-status-v2`), flush()))).status,
-    400,
+  const v2 = await post(cat(pkt(`${command}\0report-status-v2`), flush()));
+  assert.equal(v2.status, 400);
+  const sideband = await post(
+    cat(pkt(`${command}\0report-status side-band-64k`), flush()),
+  );
+  assert.equal(sideband.status, 200);
+  const sidebandBytes = new Uint8Array(await sideband.arrayBuffer());
+  assert.deepEqual(decodeSidebandReport(sidebandBytes), [
+    "unpack ok\n",
+    "ok refs/heads/side\n",
+  ]);
+  const rejected = await post(
+    cat(pkt(`${command}\0report-status side-band-64k`), flush()),
+  );
+  assert.equal(rejected.status, 200);
+  assert.deepEqual(
+    decodeSidebandReport(new Uint8Array(await rejected.arrayBuffer())),
+    [
+      "unpack Ref or request ID conflict; reload before retrying\n",
+      "ng refs/heads/side Ref or request ID conflict; reload before retrying\n",
+    ],
   );
   assert.equal(
     (await post(cat(pkt(command), flush()), { "content-type": "text/plain" }))
       .status,
     415,
   );
-  assert.equal((await repo.load()).sequence, 1);
+  assert.equal((await repo.load()).sequence, 2);
 });
 
-test("advertisement never claims multi_ack, no-done or receive sideband", async () => {
+test("advertisement never claims fetch-only capabilities and advertises receive sideband", async () => {
   const { repo } = await fixture();
   const h = createGitHandler(repo);
   const upload = await (
@@ -278,8 +366,12 @@ test("advertisement never claims multi_ack, no-done or receive sideband", async 
   ).text();
   assert.match(upload, /allow-reachable-sha1-in-want/);
   assert.doesNotMatch(upload, /multi_ack|no-done|report-status/);
-  assert.match(receive, /report-status delete-refs ofs-delta atomic/);
-  assert.doesNotMatch(receive, /side-band|report-status-v2|filter/);
+  assert.match(
+    receive,
+    /report-status delete-refs ofs-delta atomic side-band-64k/,
+  );
+  assert.doesNotMatch(receive, /report-status-v2/);
+  assert.doesNotMatch(receive, /filter/);
 });
 
 test("explicit HEAD follows the selected branch when its Git data exists", async () => {
