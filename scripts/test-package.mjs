@@ -61,8 +61,8 @@ try {
   writeFileSync(
     nodeCheck,
     `import assert from "node:assert/strict";
-import { MemoryStore, NativeGitEngine, WalRepository, createAcceptedStateRepository, MeteredObjectStore, ObjectReadSession, RepositoryUnavailableError, boundedInventory, R2InventoryListing } from "ntig";
-if (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore].every(Boolean)) throw new Error("missing export");
+import { MemoryStore, NativeGitEngine, WalRepository, createAcceptedStateRepository, MeteredObjectStore, ObjectReadSession, RepositoryUnavailableError, boundedInventory, R2InventoryListing, fetchGitPack, createPrRepository } from "ntig";
+if (![MemoryStore, NativeGitEngine, createAcceptedStateRepository, MeteredObjectStore, fetchGitPack, createPrRepository].every(Boolean)) throw new Error("missing export");
 const memory = new MemoryStore();
 const keys = new Set();
 let puts = 0;

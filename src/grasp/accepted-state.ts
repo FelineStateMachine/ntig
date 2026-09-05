@@ -8,6 +8,7 @@ import {
   type RefSnapshot,
   type Refs,
   type RefUpdate,
+  type Snapshot,
 } from "../contracts.ts";
 import { validateRefName } from "../wal.ts";
 
@@ -26,13 +27,18 @@ export interface AcceptedStateOptions {
   allowUnknownPrRefs?: boolean;
   /** Must also fence external event acceptance; an isolated Git-only lock is insufficient. */
   serialize?: <T>(operation: () => Promise<T>) => Promise<T>;
+  /** Maximum visible refs accepted from the authority state. */
+  maxRefs?: number;
 }
 
 const eventIdPattern = /^[a-f0-9]{64}$/;
 const oidPattern = /^(?!0{40}$)[a-f0-9]{40}$/;
 const prPattern = /^refs\/nostr\/([a-f0-9]{64})$/;
 
-function captureState(value: AcceptedState | null): AcceptedState | null {
+function captureState(
+  value: AcceptedState | null,
+  maxRefs: number,
+): AcceptedState | null {
   if (value === null) return null;
   if (
     !eventIdPattern.test(value.eventId) ||
@@ -44,7 +50,7 @@ function captureState(value: AcceptedState | null): AcceptedState | null {
     );
   const refs: Refs = Object.create(null);
   const entries = Object.entries(value.refs);
-  if (entries.length > 1024)
+  if (entries.length > maxRefs)
     throw new LimitError("Accepted state exceeds ref limit");
   try {
     for (const [name, oid] of entries) {
@@ -82,6 +88,9 @@ export function createAcceptedStateRepository(
   repo: GitRepository,
   options: AcceptedStateOptions,
 ): GitRepository {
+  const maxRefs = options.maxRefs ?? 16_384;
+  if (!Number.isSafeInteger(maxRefs) || maxRefs < 1)
+    throw new LimitError("Invalid accepted-state ref limit");
   const run = <T>(operation: () => Promise<T>): Promise<T> =>
     options.serialize ? options.serialize(operation) : operation();
 
@@ -95,13 +104,13 @@ export function createAcceptedStateRepository(
   return {
     load: () =>
       run(async () => {
-        const state = captureState(await options.lookupState());
+        const state = captureState(await options.lookupState(), maxRefs);
         const snapshot = await repo.load();
         return filterRefs(snapshot, state, prTip, options.allowUnknownPrRefs);
       }),
     loadRefs: () =>
       run(async () => {
-        const state = captureState(await options.lookupState());
+        const state = captureState(await options.lookupState(), maxRefs);
         const snapshot = await (repo.loadRefs ? repo.loadRefs() : repo.load());
         return filterRefs(snapshot, state, prTip, options.allowUnknownPrRefs);
       }),
@@ -113,7 +122,7 @@ export function createAcceptedStateRepository(
         ...(request.pack === undefined ? {} : { pack: request.pack.slice() }),
       };
       return run(async () => {
-        const state = captureState(await options.lookupState());
+        const state = captureState(await options.lookupState(), maxRefs);
         const tips = new Map<string, string | null | false>();
         const corrections: RefUpdate[] = [];
         for (const update of captured.updates) {
@@ -158,7 +167,9 @@ export function createAcceptedStateRepository(
           // submits old=null when correcting it. Translate only this authorized
           // view mismatch; the WAL still checks the exact physical old and root CAS.
           // The authority fence must remain held across this read and the commit.
-          const physical = await repo.load().catch((cause: unknown) => {
+          const physical = await (
+            repo.loadRefs ? repo.loadRefs() : repo.load()
+          ).catch((cause: unknown) => {
             if (cause instanceof LimitError) throw cause;
             throw new RepositoryUnavailableError(
               "Cannot reconcile PR repository view",
@@ -166,7 +177,11 @@ export function createAcceptedStateRepository(
             );
           });
           const prior =
-            physical.records.find((record) => record.id === captured.id) ??
+            (Array.isArray((physical as Snapshot).records)
+              ? (physical as Snapshot).records.find(
+                  (record) => record.id === captured.id,
+                )
+              : null) ??
             (repo.lookupRecord
               ? await repo.lookupRecord(captured.id).catch((cause: unknown) => {
                   if (cause instanceof LimitError) throw cause;
@@ -201,6 +216,12 @@ export function createAcceptedStateRepository(
         return repo.commit(captured);
       });
     },
+    ...(repo.getObject
+      ? { getObject: (oid: string) => run(() => repo.getObject!(oid)) }
+      : {}),
+    ...(repo.getObjectInfo
+      ? { getObjectInfo: (oid: string) => run(() => repo.getObjectInfo!(oid)) }
+      : {}),
   };
 }
 

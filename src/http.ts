@@ -16,7 +16,10 @@ import {
   readObjects,
   objectLinks,
   type GitObject,
+  type PackLimits,
+  DEFAULT_PACK_LIMITS,
 } from "./git/index.ts";
+import { streamUploadPack } from "./git/stream.ts";
 
 export interface GitHttpOptions {
   prefix?: string;
@@ -27,10 +30,32 @@ export interface GitHttpOptions {
   maxObjects?: number;
   maxGraphEdges?: number;
   maxResponseBytes?: number;
+  /** Shared native Git capacity profile for verification and pack generation. */
+  gitLimits?: Partial<PackLimits>;
+  /** Optional, independent profile for outbound upload-pack responses. */
+  fetchLimits?: Partial<PackLimits>;
+  /**
+   * Optional streaming upload-pack implementation. It is called before the
+   * legacy buffered request path, allowing a host with indexed object access
+   * to keep a large clone out of Worker memory. Return null to fall back to
+   * the buffered implementation.
+   */
+  streamUploadPack?: (
+    request: Request,
+    options: Readonly<GitStreamUploadPackOptions>,
+  ) => Promise<Response | null>;
   /** Synchronous best-effort observer, not a quota or billing transaction. */
   observe?: (event: Readonly<GitHttpMeterEvent>) => void;
   /** Cheap authentication runs BEFORE reading a request body. Default: deny. */
   authorizePush?: (request: Request) => boolean | Promise<boolean>;
+}
+export interface GitStreamUploadPackOptions {
+  maxResponseBytes: number;
+  maxObjects: number;
+  maxGraphEdges: number;
+  gitLimits: Readonly<PackLimits>;
+  /** Advisory request-byte meter for chunked streaming bodies. */
+  observeRequestBytes?: (bytes: number) => void;
 }
 export interface GitHttpMeterEvent {
   requestBytes: number;
@@ -100,6 +125,61 @@ function response(
   });
 }
 
+function meteredStreamResponse(
+  source: Response,
+  requestBytes: () => number,
+  observe: ((event: Readonly<GitHttpMeterEvent>) => void) | undefined,
+): Response {
+  if (!source.body || !observe) return source;
+  const reader = source.body.getReader();
+  let responseBytes = 0;
+  let reported = false;
+  const report = (errorCode?: string) => {
+    if (reported) return;
+    reported = true;
+    try {
+      const event = {
+        requestBytes: requestBytes(),
+        responseBytes,
+        status: source.status,
+        ...(errorCode === undefined ? {} : { errorCode }),
+      };
+      const result = observe(Object.freeze(event));
+      void Promise.resolve(result).catch(() => {});
+    } catch {
+      /* Advisory only. */
+    }
+  };
+  const body = new ReadableStream<Uint8Array>({
+    async pull(controller) {
+      try {
+        const next = await reader.read();
+        if (next.done) {
+          report();
+          controller.close();
+          reader.releaseLock();
+          return;
+        }
+        responseBytes += next.value.length;
+        controller.enqueue(next.value);
+      } catch (error) {
+        report(classifyError(error).code);
+        await reader.cancel(error).catch(() => {});
+        reader.releaseLock();
+        controller.error(error);
+      }
+    },
+    async cancel(reason) {
+      report("ABORTED");
+      await reader.cancel(reason);
+      reader.releaseLock();
+    },
+  });
+  const headers = new Headers(source.headers);
+  headers.delete("content-length");
+  return new Response(body, { status: source.status, headers });
+}
+
 async function bodyBytes(
   request: Request,
   limit: number,
@@ -111,6 +191,33 @@ async function bodyBytes(
     throw new LimitError("Request body exceeds limit");
   }
   if (!request.body) return new Uint8Array();
+  const declared = length === null ? null : Number(length);
+  // Git clients normally send Content-Length. Allocate the final buffer once
+  // in that case; retaining chunks and joining them later briefly doubles a
+  // large push's memory footprint.
+  if (declared !== null) {
+    const output = new Uint8Array(declared);
+    const reader = request.body.getReader();
+    let size = 0;
+    try {
+      for (;;) {
+        const chunk = await reader.read();
+        if (chunk.done) break;
+        size += chunk.value.length;
+        observe?.(chunk.value.length);
+        if (size > declared) {
+          await reader.cancel("body limit");
+          throw new LimitError("Request body exceeds limit");
+        }
+        output.set(chunk.value, size - chunk.value.length);
+      }
+    } finally {
+      reader.releaseLock();
+    }
+    if (size !== declared)
+      throw new IntegrityError("Request body length mismatch");
+    return output;
+  }
   const reader = request.body.getReader();
   const parts: Uint8Array[] = [];
   let size = 0;
@@ -274,6 +381,7 @@ async function upload(
   bytes: Uint8Array,
   maxObjects: number,
   maxEdges: number,
+  gitLimits: PackLimits,
 ): Promise<Uint8Array> {
   const packets = new Packets(bytes);
   const wants: string[] = [];
@@ -315,7 +423,7 @@ async function upload(
       throw new IntegrityError("Unsupported negotiation command");
   }
   const snapshot = await loadRepository(repo);
-  const objects = await readObjects(snapshot.packs);
+  const objects = await readObjects(snapshot.packs, gitLimits);
   let edges = 0;
   const cache = new Map<string, ReturnType<typeof objectLinks>>();
   const links = (object: GitObject) => {
@@ -352,7 +460,7 @@ async function upload(
             object.type === "commit" ||
             object.type === "tag")),
     );
-  const pack = await encodePack(packed);
+  const pack = await encodePack(packed, gitLimits);
   if (!caps.includes("side-band-64k")) return join([pkt("NAK\n"), pack]);
   const parts = [pkt("NAK\n")];
   for (let position = 0; position < pack.length; position += 65_515) {
@@ -386,11 +494,20 @@ export function createGitHandler(
   options: GitHttpOptions = {},
 ): (request: Request) => Promise<Response> {
   const prefix = (options.prefix ?? "/repo.git").replace(/\/$/, "");
-  const maxBody = options.maxBodyBytes ?? 4 * 1024 * 1024 + 256 * 1024;
   const maxRefs = options.maxRefs ?? 1024;
-  const maxObjects = options.maxObjects ?? 4096;
   const maxEdges = options.maxGraphEdges ?? 65_536;
-  const maxResponseBytes = options.maxResponseBytes ?? 17 * 1024 * 1024;
+  const gitLimits = Object.freeze({
+    ...DEFAULT_PACK_LIMITS,
+    ...options.gitLimits,
+  });
+  const fetchLimits = Object.freeze({
+    ...gitLimits,
+    ...options.fetchLimits,
+  });
+  const maxObjects = options.maxObjects ?? fetchLimits.maxObjects;
+  const bodyLimit = options.maxBodyBytes ?? gitLimits.maxPackBytes + 256 * 1024;
+  const responseLimit =
+    options.maxResponseBytes ?? fetchLimits.maxPackBytes + 1 * 1024 * 1024;
   const parsedPrefix = new URL(prefix, "https://nostrwal.invalid");
   if (
     !prefix.startsWith("/") ||
@@ -408,20 +525,19 @@ export function createGitHandler(
     if (!options.headRef.startsWith("refs/heads/"))
       throw new Error("HEAD must name a branch");
   }
-  for (const value of [
-    maxBody,
-    maxRefs,
-    maxObjects,
-    maxEdges,
-    maxResponseBytes,
-  ])
+  for (const value of [bodyLimit, maxRefs, maxObjects, maxEdges, responseLimit])
     if (!Number.isSafeInteger(value) || value < 1)
       throw new Error("Invalid HTTP limit");
-  if (maxObjects > 4096 || maxRefs > 1024 || maxEdges > 65_536)
-    throw new Error("HTTP limits exceed native Git support");
+  for (const value of Object.values(gitLimits))
+    if (!Number.isSafeInteger(value) || value < 1)
+      throw new Error("Invalid native Git limit");
+  for (const value of Object.values(fetchLimits))
+    if (!Number.isSafeInteger(value) || value < 1)
+      throw new Error("Invalid fetch Git limit");
   return async (request: Request): Promise<Response> => {
     let requestBytes = 0;
     let errorCode: string | undefined;
+    let deferredStreamObservation = false;
     const handle = async (): Promise<Response> => {
       const url = new URL(request.url);
       const info = url.pathname === `${prefix}/info/refs`;
@@ -460,12 +576,54 @@ export function createGitHandler(
           return response("Unsupported media type\n", 415);
         if (request.headers.has("content-encoding"))
           return response("Content encoding is not supported\n", 415);
-        const bytes = await bodyBytes(request, maxBody, (size) => {
+        if (
+          fetch &&
+          (options.streamUploadPack || (repo.getObjectInfo && repo.getObject))
+        ) {
+          const streamed = await (
+            options.streamUploadPack ??
+            ((request, streamOptions) =>
+              streamUploadPack(repo, request, streamOptions))
+          )(
+            request,
+            Object.freeze({
+              maxResponseBytes: responseLimit,
+              maxObjects,
+              maxGraphEdges: maxEdges,
+              gitLimits: fetchLimits,
+              observeRequestBytes: (size: number) => {
+                requestBytes += size;
+              },
+            }),
+          );
+          if (streamed !== null) {
+            deferredStreamObservation = true;
+            const length = request.headers.get("content-length");
+            const knownRequestBytes =
+              length !== null && /^\d+$/.test(length) ? Number(length) : 0;
+            return meteredStreamResponse(
+              streamed,
+              () => requestBytes || knownRequestBytes,
+              options.observe,
+            );
+          }
+        }
+        const bytes = await bodyBytes(request, bodyLimit, (size) => {
           requestBytes += size;
         });
+        // Recent Git clients probe receive-pack authorization with a standalone
+        // flush before sending the real pack (notably for pushes over 1 MiB).
+        // It is a successful empty exchange and must not be treated as a
+        // malformed ref transaction.
+        if (
+          receive &&
+          bytes.length === 4 &&
+          bytes.every((value) => value === 48)
+        )
+          return response(null, 200, "application/x-git-receive-pack-result");
         if (fetch)
           return response(
-            await upload(repo, bytes, maxObjects, maxEdges),
+            await upload(repo, bytes, maxObjects, maxEdges, fetchLimits),
             200,
             "application/x-git-upload-pack-result",
           );
@@ -478,7 +636,7 @@ export function createGitHandler(
               0,
             )
           : 0;
-        if (successBytes > maxResponseBytes)
+        if (successBytes > responseLimit)
           throw new LimitError("Push report exceeds response limit");
         let rejection: string | undefined;
         try {
@@ -523,12 +681,13 @@ export function createGitHandler(
     };
     let result = await handle();
     let responseBytes = Number(result.headers.get("content-length") ?? 0);
-    if (responseBytes > maxResponseBytes) {
+    if (responseBytes > responseLimit) {
       await result.body?.cancel();
       result = response("Response byte limit exceeded\n", 413);
       responseBytes = Number(result.headers.get("content-length"));
       errorCode = "LIMIT_EXCEEDED";
     }
+    if (deferredStreamObservation) return result;
     try {
       const observed = options.observe?.(
         Object.freeze({

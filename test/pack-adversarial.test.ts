@@ -142,6 +142,13 @@ test("a real thin REF_DELTA needs an earlier pack and returns only newly decoded
   const fresh = await decodePack(thin, {}, bases);
   assert.equal(fresh.length, 1);
   assert.deepEqual(fresh[0]!.data, derived);
+  let requested = "";
+  const lazy = await decodePack(thin, {}, undefined, async (oid) => {
+    requested = oid;
+    return bases.get(oid) ?? null;
+  });
+  assert.equal(requested, hex(objectId(base)));
+  assert.deepEqual(lazy[0]!.data, derived);
   const all = await readObjects([first, thin]);
   assert.equal(all.size, 2);
   assert.deepEqual(all.get(hex(objectId(derived)))!.data, derived);

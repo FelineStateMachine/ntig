@@ -10,6 +10,8 @@ The question this project answers is: can a bounded, useful Git service run dire
 
 The initial answer is **yes for the tested, bounded workload**: the suite covers real Git interoperability in workerd/R2, failure recovery and malformed input. [Validation details](docs/VALIDATION.md) distinguish that evidence from production-readiness. [GRASP components](docs/GRASP.md) document protocol building blocks without claiming complete conformance. [Embedding and cost](docs/INTEGRATION.md) documents the pinned package, accepted-state authority boundary, metering, errors and remaining blockers.
 
+The 0.4.0 iteration adds [GRASP extension building blocks](docs/GRASP-EXTENSIONS.md): a PR repository adapter with accepted-event authority and bounded outbound Smart HTTP fetch. Relay synchronization and archive policy remain host responsibilities.
+
 The 0.3.0 iteration adds [bounded runtime inventory](docs/INVENTORY.md) for both storage formats: metadata/history validation, pack hashes and per-category byte/key totals, without writes or migration. It builds on 0.2.1's opt-in request-scoped read reuse and leaner checkpoint migration. [Read-efficiency measurements](docs/READ-EFFICIENCY.md) track retry overhead and metadata growth separately from Git pack limits; none of these features enables garbage collection.
 
 ## Development

@@ -61,14 +61,28 @@ export interface Snapshot extends RefSnapshot {
   records: WalRecord[];
   packs: Uint8Array[];
 }
+/** Indexed Git metadata used for graph walks without loading blob bodies. */
+export interface GitObjectInfo {
+  oid: string;
+  type: "commit" | "tree" | "blob" | "tag";
+  /** Uncompressed object body size, for quotas and response planning. */
+  size: number;
+  links: readonly { oid: string; type: "commit" | "tree" | "blob" | "tag" }[];
+}
+/** Optional object-level repository reader for indexed backends. */
+export interface GitObjectReader {
+  getObject?(oid: string): Promise<import("./git/pack.ts").GitObject | null>;
+  getObjectInfo?(oid: string): Promise<GitObjectInfo | null>;
+}
 /** Public integration seam; authority wrappers need no concrete WAL internals. */
-export interface GitRepository {
+export interface GitRepository extends GitObjectReader {
   load(): Promise<Snapshot>;
   /** Optional metadata-only view for advertisements and other ref readers. */
   loadRefs?(): Promise<RefSnapshot>;
   commit(request: CommitRequest): Promise<Receipt>;
   /** Indexed committed-record lookup; does not imply the full history is in Snapshot.records. */
   lookupRecord?(id: string): Promise<WalRecord | null>;
+  /** Indexed object access for repositories too large to materialize as packs. */
 }
 export class ConflictError extends Error {
   override name = "ConflictError";

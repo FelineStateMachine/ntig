@@ -1,6 +1,6 @@
 {
   "name": "ntig",
-  "version": "0.3.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Bounded Git hosting on Cloudflare Workers and R2 for Nostr applications",
@@ -38,6 +38,7 @@
     "check": "npm run typecheck && npm test && npm run build && npm run build:library"
   },
   "dependencies": {
+    "@noble/hashes": "2.0.1",
     "@scure/base": "2.4.0",
     "fflate": "0.8.3"
   },

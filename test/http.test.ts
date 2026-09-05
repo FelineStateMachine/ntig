@@ -246,6 +246,12 @@ test("receive requires a flush, rejects unsupported capabilities and commits not
         body: body.slice().buffer,
       }),
     );
+  const probe = await post(new TextEncoder().encode("0000"));
+  assert.equal(probe.status, 200);
+  assert.equal(
+    probe.headers.get("content-type"),
+    "application/x-git-receive-pack-result",
+  );
   assert.equal((await post(pkt(command))).status, 400);
   assert.equal(
     (await post(cat(pkt(`${command}\0report-status-v2`), flush()))).status,

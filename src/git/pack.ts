@@ -1,4 +1,5 @@
 import { unzlibSync } from "fflate";
+import { sha1 as nobleSha1 } from "@noble/hashes/legacy.js";
 import { IntegrityError, LimitError } from "../contracts.ts";
 
 export type GitObjectType = "commit" | "tree" | "blob" | "tag";
@@ -13,13 +14,21 @@ export interface PackLimits {
   maxObjects: number;
   maxDeltaDepth: number;
   maxTotalObjectBytes: number;
+  /** Maximum number of packs combined during repository verification. */
+  maxPacks: number;
+  /** Maximum compressed bytes combined across those packs. */
+  maxTotalPackBytes: number;
 }
 export const DEFAULT_PACK_LIMITS: Readonly<PackLimits> = Object.freeze({
-  maxPackBytes: 4 * 1024 * 1024,
-  maxObjectBytes: 4 * 1024 * 1024,
-  maxObjects: 4096,
+  // These are deliberately large enough for ordinary repositories while still
+  // bounding the materialized working set in a Worker request.
+  maxPackBytes: 32 * 1024 * 1024,
+  maxObjectBytes: 16 * 1024 * 1024,
+  maxObjects: 131_072,
   maxDeltaDepth: 64,
-  maxTotalObjectBytes: 16 * 1024 * 1024,
+  maxTotalObjectBytes: 64 * 1024 * 1024,
+  maxPacks: 256,
+  maxTotalPackBytes: 64 * 1024 * 1024,
 });
 const TYPES: Record<number, GitObjectType> = {
   1: "commit",
@@ -31,8 +40,14 @@ const hex = (b: Uint8Array) =>
   Array.from(b, (x) => x.toString(16).padStart(2, "0")).join("");
 const eq = (a: Uint8Array, b: Uint8Array) =>
   a.length === b.length && a.every((v, i) => v === b[i]);
-async function sha1(d: Uint8Array) {
-  return new Uint8Array(await crypto.subtle.digest("SHA-1", d.slice().buffer));
+function sha1(d: Uint8Array) {
+  return nobleSha1(d);
+}
+function objectHash(t: GitObjectType, d: Uint8Array) {
+  const hash = nobleSha1.create();
+  hash.update(new TextEncoder().encode(`${t} ${d.length}\0`));
+  hash.update(d);
+  return hash.digest();
 }
 function bad(s: string): never {
   throw new IntegrityError(s);
@@ -49,13 +64,6 @@ function readVarint(a: Uint8Array, p: number): [number, number] {
     if (!(x & 128)) return [n, p];
     sh += 7;
   }
-}
-function objectBytes(t: GitObjectType, d: Uint8Array) {
-  const h = new TextEncoder().encode(`${t} ${d.length}\0`),
-    o = new Uint8Array(h.length + d.length);
-  o.set(h);
-  o.set(d, h.length);
-  return o;
 }
 class Bits {
   constructor(
@@ -243,6 +251,7 @@ export async function decodePack(
   pack: Uint8Array,
   limits: Partial<PackLimits> = {},
   bases?: ReadonlyMap<string, GitObject>,
+  resolveBase?: (oid: string) => Promise<GitObject | null>,
 ): Promise<GitObject[]> {
   const lim = { ...DEFAULT_PACK_LIMITS, ...limits };
   for (const value of Object.values(lim))
@@ -352,6 +361,7 @@ export async function decodePack(
     fresh: GitObject[] = [];
   const depth = new Map<number, number>(),
     depthOid = new Map<string, number>();
+  const attempted = new Set<string>();
   while (pending.length) {
     let progress = false;
     for (let i = pending.length - 1; i >= 0; i--) {
@@ -359,7 +369,7 @@ export async function decodePack(
       let b: GitObject | undefined;
       if (r.kind === "full") {
         b = {
-          oid: hex(await sha1(objectBytes(r.type!, r.data))),
+          oid: hex(objectHash(r.type!, r.data)),
           type: r.type!,
           data: r.data,
         };
@@ -390,7 +400,7 @@ export async function decodePack(
         r.kind === "full"
           ? b
           : {
-              oid: hex(await sha1(objectBytes(b.type, data))),
+              oid: hex(objectHash(b.type, data)),
               type: b.type,
               data,
             };
@@ -405,6 +415,30 @@ export async function decodePack(
       pending.splice(i, 1);
       progress = true;
     }
+    if (!progress && resolveBase) {
+      for (const missing of pending) {
+        if (
+          missing.kind !== "ref" ||
+          resolved.has(missing.base as string) ||
+          attempted.has(missing.base as string)
+        )
+          continue;
+        const oid = missing.base as string;
+        attempted.add(oid);
+        const base = await resolveBase(oid);
+        if (!base) continue;
+        if (base.oid !== oid)
+          bad("external delta base has the wrong object ID");
+        if (resolved.has(oid)) bad("duplicate external delta base");
+        if (total > lim.maxTotalObjectBytes - base.data.length)
+          throw new LimitError("base objects exceed aggregate limit");
+        total += base.data.length;
+        resolved.set(oid, base);
+        depthOid.set(oid, 0);
+        progress = true;
+        break;
+      }
+    }
     if (!progress) bad("unresolved delta base");
   }
   return fresh;
@@ -416,8 +450,8 @@ export async function readObjects(
   const out = new Map<string, GitObject>();
   const lim = { ...DEFAULT_PACK_LIMITS, ...limits };
   if (
-    packs.length > 128 ||
-    packs.reduce((sum, pack) => sum + pack.length, 0) > 16 * 1024 * 1024
+    packs.length > lim.maxPacks ||
+    packs.reduce((sum, pack) => sum + pack.length, 0) > lim.maxTotalPackBytes
   )
     throw new LimitError("aggregate pack limit exceeded");
   let total = 0;

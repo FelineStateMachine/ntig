@@ -1,13 +1,13 @@
-import { IntegrityError } from "../contracts.ts";
-import type { WalRepository } from "../wal.ts";
+import {
+  IntegrityError,
+  type GitRepository,
+  type RefSnapshot,
+} from "../contracts.ts";
+import {
+  createAcceptedStateRepository,
+  type AcceptedStateOptions,
+} from "./accepted-state.ts";
 
-/**
- * GRASP-06's PR namespace: the suffix is the 32-byte (lower-case) event id.
- *
- * This is intentionally only the ref policy.  It does not accept Nostr
- * events, verify signatures, or perform the timed cleanup described by the
- * GRASP standard; those responsibilities belong to the caller/service.
- */
 const prRefPattern = /^refs\/nostr\/([0-9a-f]{64})$/;
 
 export function isPrRef(name: string): boolean {
@@ -15,75 +15,73 @@ export function isPrRef(name: string): boolean {
 }
 
 export interface PrRepositoryOptions {
-  /**
-   * Return the already-verified tip for an accepted PR/PR-update event.
-   * Return null when no accepted event is known yet (bounded pushes remain
-   * possible in that case).
-   */
-  lookupTip?: (eventId: string) => Promise<string | null>;
+  /** Verified, repository-scoped event tip; null is unknown, false is inadmissible. */
+  lookupTip?: (eventId: string) => Promise<string | null | false>;
+  /** The host must supply upload admission, deadlines and trusted cleanup. */
+  allowUnknownPrRefs?: boolean;
+  /** Shares the host's event-acceptance and Git-publication authority fence. */
+  serialize?: AcceptedStateOptions["serialize"];
 }
 
-export type PrRepository = Pick<WalRepository, "load" | "commit">;
+export type PrRepository = GitRepository;
 
 /**
- * Wrap a WAL repository with the GRASP-06 PR-only ref policy.
- *
- * Validation happens completely before delegating, so a rejected mixed or
- * malformed transaction has no writes or partial application.  The WAL
- * remains responsible for normal old-value/CAS checks and pack validation.
+ * GRASP-06 Git policy, composed with the accepted-state authority protections.
+ * Nostr verification, signer/path matching, expiry and admission belong to the
+ * host. Public callers cannot delete refs; cleanup uses the private raw WAL.
+ * Unknown uploads require explicit opt-in. No ordinary refs or HEAD are exposed.
  */
 export function createPrRepository(
   repo: PrRepository,
   options: PrRepositoryOptions = {},
 ): PrRepository {
+  const onlyPrRefs = <T extends RefSnapshot>(snapshot: T): T => ({
+    ...snapshot,
+    headRef: null,
+    refs: Object.fromEntries(
+      Object.entries(snapshot.refs).filter(([name]) => isPrRef(name)),
+    ),
+  });
+  const authorized = createAcceptedStateRepository(
+    {
+      load: async () => onlyPrRefs(await repo.load()),
+      loadRefs: async () =>
+        onlyPrRefs(await (repo.loadRefs ? repo.loadRefs() : repo.load())),
+      commit: (request) => repo.commit(request),
+      ...(repo.lookupRecord
+        ? { lookupRecord: (id: string) => repo.lookupRecord!(id) }
+        : {}),
+      ...(repo.getObject
+        ? { getObject: (oid: string) => repo.getObject!(oid) }
+        : {}),
+      ...(repo.getObjectInfo
+        ? { getObjectInfo: (oid: string) => repo.getObjectInfo!(oid) }
+        : {}),
+    },
+    {
+      lookupState: async () => null,
+      ...(options.lookupTip ? { lookupPrTip: options.lookupTip } : {}),
+      allowUnknownPrRefs: options.allowUnknownPrRefs === true,
+      ...(options.serialize ? { serialize: options.serialize } : {}),
+    },
+  );
   return {
-    load: () => repo.load(),
+    load: () => authorized.load(),
+    loadRefs: () => authorized.loadRefs!(),
     commit: async (request) => {
-      // Caller-owned data must not change while the accepted-event lookup awaits.
-      const captured = {
-        id: request.id,
-        updates: request.updates.map((update) => ({ ...update })),
-        ...(request.pack === undefined ? {} : { pack: request.pack.slice() }),
-      };
-      const eventIds: string[] = [];
-      for (const update of captured.updates) {
-        const match =
-          typeof update.name === "string"
-            ? prRefPattern.exec(update.name)
-            : null;
-        if (!match) {
+      for (const update of request.updates) {
+        if (typeof update.name !== "string" || !isPrRef(update.name))
           throw new IntegrityError(
             "GRASP-06 PR repository accepts only refs/nostr/<event-id>",
           );
-        }
-        // Deletions are cleanup operations and do not require a currently
-        // accepted event (or tip) to exist.
-        if (update.new !== null) eventIds.push(match[1]!);
       }
-
-      if (options.lookupTip) {
-        const checked = new Map<string, string | null>();
-        for (const eventId of eventIds) {
-          if (!checked.has(eventId))
-            checked.set(eventId, await options.lookupTip(eventId));
-          const knownTip = checked.get(eventId)!;
-          if (
-            knownTip !== null &&
-            captured.updates.some(
-              (update) =>
-                update.name === `refs/nostr/${eventId}` &&
-                update.new !== null &&
-                update.new !== knownTip,
-            )
-          ) {
-            throw new IntegrityError(
-              `PR tip does not match accepted event ${eventId}`,
-            );
-          }
-        }
-      }
-
-      return repo.commit(captured);
+      return authorized.commit(request);
     },
+    ...(repo.getObject
+      ? { getObject: (oid: string) => authorized.getObject!(oid) }
+      : {}),
+    ...(repo.getObjectInfo
+      ? { getObjectInfo: (oid: string) => authorized.getObjectInfo!(oid) }
+      : {}),
   };
 }

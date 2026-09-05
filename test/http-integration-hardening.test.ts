@@ -71,19 +71,87 @@ test("maxResponseBytes converts oversized responses into bounded 413 errors", as
   assert.equal(events.at(-1)?.status, 413);
 });
 
-test("HTTP limits cannot exceed bounded native Git ceilings", () => {
-  assert.throws(
-    () => createGitHandler(repository(), { maxObjects: 4097 }),
-    /exceed native Git support/,
+test("HTTP limits can use a configured native Git capacity profile", () => {
+  assert.doesNotThrow(() =>
+    createGitHandler(repository(), {
+      maxObjects: 131_072,
+      maxRefs: 4096,
+      maxGraphEdges: 1_000_000,
+      gitLimits: {
+        maxPackBytes: 64 * 1024 * 1024,
+        maxObjectBytes: 32 * 1024 * 1024,
+        maxTotalObjectBytes: 128 * 1024 * 1024,
+        maxObjects: 1_000_000,
+        maxPacks: 1024,
+        maxTotalPackBytes: 256 * 1024 * 1024,
+      },
+    }),
   );
   assert.throws(
-    () => createGitHandler(repository(), { maxRefs: 1025 }),
-    /exceed native Git support/,
+    () => createGitHandler(repository(), { gitLimits: { maxObjectBytes: 0 } }),
+    /Invalid native Git limit/,
   );
-  assert.throws(
-    () => createGitHandler(repository(), { maxGraphEdges: 65_537 }),
-    /exceed native Git support/,
+});
+
+test("stream upload-pack hook runs before the buffered request path", async () => {
+  let received:
+    Readonly<{ maxObjects: number; maxPackBytes: number }> | undefined;
+  const handler = createGitHandler(repository(), {
+    streamUploadPack: async (_request, options) => {
+      received = {
+        maxObjects: options.maxObjects,
+        maxPackBytes: options.gitLimits.maxPackBytes,
+      };
+      return new Response("streamed", {
+        headers: { "content-type": "application/x-git-upload-pack-result" },
+      });
+    },
+  });
+  const result = await handler(
+    new Request("https://nostrwal.test/repo.git/git-upload-pack", {
+      method: "POST",
+      headers: { "content-type": "application/x-git-upload-pack-request" },
+      body: "not buffered",
+    }),
   );
+  assert.equal(result.status, 200);
+  assert.equal(await result.text(), "streamed");
+  assert.deepEqual(received, {
+    maxObjects: 131_072,
+    maxPackBytes: 32 * 1024 * 1024,
+  });
+});
+
+test("streamed responses report bytes when the consumer reaches EOF", async () => {
+  const events: GitHttpMeterEvent[] = [];
+  const handler = createGitHandler(repository(), {
+    observe: (event) => events.push(event),
+    streamUploadPack: async () =>
+      new Response(
+        new ReadableStream({
+          start(controller) {
+            controller.enqueue(new Uint8Array([1, 2, 3]));
+            controller.enqueue(new Uint8Array([4, 5]));
+            controller.close();
+          },
+        }),
+        { headers: { "content-type": "application/x-git-upload-pack-result" } },
+      ),
+  });
+  const result = await handler(
+    new Request("https://nostrwal.test/repo.git/git-upload-pack", {
+      method: "POST",
+      headers: { "content-type": "application/x-git-upload-pack-request" },
+      body: "0000",
+    }),
+  );
+  assert.deepEqual(
+    [...new Uint8Array(await result.arrayBuffer())],
+    [1, 2, 3, 4, 5],
+  );
+  assert.deepEqual(events, [
+    { requestBytes: 0, responseBytes: 5, status: 200 },
+  ]);
 });
 
 test("explicit null HEAD suppresses heuristics and accepted HEAD overrides options", async () => {

@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { IntegrityError } from "../src/contracts.ts";
+import { AuthorizationError, IntegrityError } from "../src/contracts.ts";
 import type { CommitRequest } from "../src/contracts.ts";
 import { createPrRepository, isPrRef } from "../src/grasp/pr-policy.ts";
 
@@ -42,6 +42,7 @@ test("caller mutations during async lookup cannot escape PR-only authorization",
     release = resolve;
   });
   const wrapped = createPrRepository(repo, {
+    allowUnknownPrRefs: true,
     lookupTip: async () => {
       await gate;
       return null;
@@ -97,6 +98,7 @@ test("known event tip must match, while an unknown event permits bounded push", 
   const { repo, writes } = fake();
   const id = event("a");
   const wrapped = createPrRepository(repo, {
+    allowUnknownPrRefs: true,
     lookupTip: async (eventId) => (eventId === id ? oid("b") : null),
   });
   await assert.rejects(
@@ -104,7 +106,7 @@ test("known event tip must match, while an unknown event permits bounded push", 
       id: "mismatch",
       updates: [{ name: `refs/nostr/${id}`, old: null, new: oid("a") }],
     }),
-    IntegrityError,
+    AuthorizationError,
   );
   assert.equal(writes.length, 0);
   const unknown = event("c");
@@ -115,35 +117,95 @@ test("known event tip must match, while an unknown event permits bounded push", 
   assert.equal(writes.length, 1);
 });
 
-test("deletion is allowed without tip lookup and receipts/errors pass through", async () => {
+test("public deletion is denied even when the event is accepted", async () => {
   const { repo, writes } = fake();
-  let lookedUp = false;
-  const wrapped = createPrRepository(repo, {
-    lookupTip: async () => {
-      lookedUp = true;
-      return oid("a");
-    },
-  });
-  const id = event("a");
-  const receipt = await wrapped.commit({
-    id: "delete",
-    updates: [{ name: `refs/nostr/${id}`, old: oid("a"), new: null }],
-  });
-  assert.deepEqual(receipt, { id: "delete", sequence: 1, replayed: false });
-  assert.equal(lookedUp, false);
-  assert.equal(writes.length, 1);
-  const delegated = new Error("delegate");
-  const failing = createPrRepository({
-    ...repo,
-    commit: async () => {
-      throw delegated;
-    },
-  });
+  const wrapped = createPrRepository(repo, { lookupTip: async () => oid("a") });
   await assert.rejects(
-    failing.commit({
-      id: "x",
-      updates: [{ name: `refs/nostr/${id}`, old: null, new: null }],
+    wrapped.commit({
+      id: "delete",
+      updates: [{ name: `refs/nostr/${event("a")}`, old: oid("a"), new: null }],
     }),
-    delegated,
+    AuthorizationError,
   );
+  assert.equal(writes.length, 0);
+});
+
+test("unknown uploads require opt-in, while false authority always denies", async () => {
+  const { repo, writes } = fake();
+  const request = {
+    id: "unknown",
+    updates: [{ name: `refs/nostr/${event("a")}`, old: null, new: oid("a") }],
+  };
+  await assert.rejects(
+    createPrRepository(repo).commit(request),
+    AuthorizationError,
+  );
+  await assert.rejects(
+    createPrRepository(repo, {
+      allowUnknownPrRefs: true,
+      lookupTip: async () => false,
+    }).commit(request),
+    AuthorizationError,
+  );
+  assert.equal(writes.length, 0);
+});
+
+test("metadata reads hide ordinary, expired and mismatched refs without reading packs", async () => {
+  let loads = 0;
+  let fenced = false;
+  const { repo } = fake();
+  const wrapped = createPrRepository(
+    {
+      ...repo,
+      load: async () => {
+        loads++;
+        return snapshot;
+      },
+      loadRefs: async () => {
+        assert.equal(fenced, true);
+        return {
+          ...snapshot,
+          refs: {
+            "refs/heads/main": oid("a"),
+            [`refs/nostr/${event("a")}`]: oid("a"),
+            [`refs/nostr/${event("b")}`]: oid("b"),
+            [`refs/nostr/${event("c")}`]: oid("c"),
+            [`refs/nostr/${event("d")}`]: oid("d"),
+          },
+        };
+      },
+    },
+    {
+      allowUnknownPrRefs: true,
+      lookupTip: async (id) => {
+        assert.equal(fenced, true);
+        return id === event("a")
+          ? oid("a")
+          : id === event("b")
+            ? false
+            : id === event("c")
+              ? oid("b")
+              : null;
+      },
+      serialize: async (operation) => {
+        fenced = true;
+        try {
+          return await operation();
+        } finally {
+          fenced = false;
+        }
+      },
+    },
+  );
+  const view = await wrapped.loadRefs!();
+  assert.deepEqual(
+    { ...view.refs },
+    {
+      [`refs/nostr/${event("a")}`]: oid("a"),
+      [`refs/nostr/${event("d")}`]: oid("d"),
+    },
+  );
+  assert.equal(view.headRef, null);
+  assert.equal(loads, 0);
+  assert.equal(fenced, false);
 });

@@ -9,6 +9,7 @@ export * from "./memory-store.ts";
 export * from "./r2-store.ts";
 export * from "./wal.ts";
 export * from "./http.ts";
+export * from "./git-fetch.ts";
 export * from "./git/index.ts";
 export * from "./grasp/address.ts";
 export * from "./grasp/discovery.ts";

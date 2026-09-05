@@ -14,7 +14,7 @@ Reference: [GRASP specifications](https://ngit.dev/grasp/), inspected at source 
 | Discovery                   | Root `Accept: application/nostr+json` returns NIP-11-shaped metadata with acceptance criteria. Complete supported GRASP/NIP lists remain empty.        |
 | Repository landing page     | Hosted path serves safe HTML linking to a Nostr Git client; unhosted repository paths return 404.                                                      |
 | GRASP-06 Git policy helper  | `createPrRepository` only permits `refs/nostr/<64-hex-event-id>`; mixed transactions are rejected atomically and known accepted event tips must match. |
-| GRASP-06 path helper        | Parses/generates `/prs/<npub>/<identifier>.git` and isolates its storage. Not mounted as a public service.                                             |
+| GRASP-06 path helper        | Parses/generates `/prs/<npub>/<identifier>.git` and isolates its storage. Not mounted by the example Worker.                                           |
 
 ## Configuration
 
@@ -28,7 +28,11 @@ Identifiers have a local 256-byte UTF-8 quota. Helpers require canonical upperca
 
 The PR policy helper requires an injected lookup that returns a tip **only from a signature-verified, accepted PR/PR-update event**. It does not fetch or verify events itself. The caller must coordinate event acceptance with Git publication to avoid races, and enforce quotas. No anonymous PR hosting route is enabled by the example Worker.
 
-## Intentionally deferred
+## Extension building blocks
+
+Version 0.4.0 completes the PR policy wrapper's authority and visibility protections and adds `fetchGitPack` for bounded outbound Smart HTTP. See [GRASP extension building blocks](GRASP-EXTENSIONS.md) for the breaking PR-helper defaults, fetch limits and host integration contract. GRASP-02/03/05/06 service conformance still belongs to the integrated host.
+
+## Host responsibilities and deferred service behavior
 
 - **GRASP-01 completion:** NIP-01 relay, NIP-34 event acceptance, recursive maintainer resolution, signed latest-state authorization, purgatory and PR-ref cleanup. The example still uses bearer-token writes.
 - **GRASP-02:** historic/live relay synchronization and scheduled Git/PR fetches. This needs durable jobs, relay state and retry/backoff policy.
@@ -37,4 +41,4 @@ The PR policy helper requires an injected lookup that returns a tip **only from 
 - **GRASP-06 completion:** event acceptance without a repository announcement, public empty PR repositories, expiry/cleanup and abuse controls.
 - **GRASP-08:** repository-scoped NIP-98 credentials, NIP-42 relay authentication, recursive service-owner whitelist and private metadata handling. A bearer token or generic NIP-98 check would not satisfy its specific rules.
 
-Run the upstream GRASP audit against an integrated relay/service before adding any entry to `supported_grasps`.
+Verify each profile against the integrated relay/service before adding it to `supported_grasps`. Record the local interoperability and conformance checks and run the upstream audit when available; local test results do not constitute an upstream audit. Keep bounded previews unadvertised when required coverage is still unverified.
